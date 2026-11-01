@@ -1,0 +1,177 @@
+import asyncio
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from sqlalchemy.orm import Session
+from app.models.deployment import Deployment
+from app.models.environment import Environment
+from app.models.project import Project
+from app.models.release import Release
+from app.adapters import get_deployment_adapter, get_security_scanner_adapter
+from app.services.health_monitor import HealthMonitorService
+from app.services.rollback_manager import RollbackManager
+from app.services.audit_service import AuditService
+from app.core.logging import get_logger
+
+logger = get_logger("releasepilot.deployment")
+
+class DeploymentEngine:
+    @staticmethod
+    def _append_log(logs: List[Dict[str, Any]], level: str, message: str) -> None:
+        logs.append({
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": level,
+            "message": message
+        })
+
+    @classmethod
+    async def execute_deployment(
+        cls,
+        db: Session,
+        deployment_id: str,
+        simulate_failure: bool = False
+    ) -> None:
+        """
+        Asynchronously drives the end-to-end zero-downtime deployment pipeline:
+        Phase 1: Scanning (Trivy CVE analysis)
+        Phase 2: Deploying (Kubernetes Rolling/Canary Rollout)
+        Phase 3: Verifying (Readiness probe, smoke test, metric validation)
+        Phase 4: Finalize Active OR Automated Rollback upon verification failure
+        """
+        deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
+        if not deployment:
+            logger.error(f"Deployment {deployment_id} not found")
+            return
+
+        environment = db.query(Environment).filter(Environment.id == deployment.environment_id).first()
+        project = db.query(Project).filter(Project.id == deployment.project_id).first()
+        release = db.query(Release).filter(Release.id == deployment.release_id).first()
+
+        logs: List[Dict[str, Any]] = list(deployment.logs or [])
+        cls._append_log(logs, "INFO", f"Starting deployment pipeline for '{project.name}' -> environment '{environment.name}'")
+        cls._append_log(logs, "INFO", f"Target release: {release.version} (Image: {project.image_repository}:{release.image_tag})")
+        
+        deployment.status = "scanning"
+        deployment.progress = 15
+        deployment.logs = logs
+        db.commit()
+
+        # Phase 1: Security Scanning
+        scanner = get_security_scanner_adapter()
+        cls._append_log(logs, "INFO", f"Executing container image security scan via adapter '{scanner.adapter_name}'")
+        scan_report = await scanner.scan_image(f"{project.image_repository}:{release.image_tag}")
+        
+        # Update release scan info
+        release.scan_status = scan_report.get("status", "clean")
+        release.scan_results = scan_report
+        db.commit()
+
+        if scan_report.get("critical_count", 0) > 0 and environment.name == "production":
+            cls._append_log(logs, "ERROR", f"CRITICAL security vulnerabilities found in image. Deployment halted by policy.")
+            deployment.status = "failed"
+            deployment.finished_at = datetime.utcnow()
+            deployment.logs = logs
+            db.commit()
+            return
+
+        cls._append_log(logs, "INFO", f"Security scan passed: {scan_report.get('critical_count', 0)} Critical, {scan_report.get('high_count', 0)} High CVEs.")
+
+        # Phase 2: Deploying
+        deployment.status = "deploying"
+        deployment.progress = 40
+        deployment.logs = logs
+        db.commit()
+
+        k8s_adapter = get_deployment_adapter()
+        deployment.adapter_name = k8s_adapter.adapter_name
+        deployment.is_simulated = k8s_adapter.is_simulated
+
+        cls._append_log(logs, "INFO", f"Dispatching deployment to orchestrator '{k8s_adapter.adapter_name}' (simulated={k8s_adapter.is_simulated})")
+
+        deploy_result = await k8s_adapter.deploy(
+            app_name=project.name,
+            namespace=environment.k8s_namespace,
+            image=f"{project.image_repository}:{release.image_tag}",
+            replicas=environment.replicas,
+            port=project.default_port,
+            env_vars=environment.env_vars,
+            strategy=deployment.strategy,
+            canary_steps=environment.canary_steps,
+            simulate_failure=simulate_failure
+        )
+
+        logs.extend(deploy_result.logs)
+        deployment.logs = logs
+
+        if not deploy_result.success:
+            cls._append_log(logs, "ERROR", f"Deployment execution failed: {deploy_result.message}")
+            if environment.auto_rollback_enabled:
+                cls._append_log(logs, "WARN", "Auto-rollback enabled. Triggering immediate rollback...")
+                db.commit()
+                await RollbackManager.trigger_rollback(
+                    db=db,
+                    deployment=deployment,
+                    reason=f"Deployment phase failure: {deploy_result.message}",
+                    is_automated=True
+                )
+            else:
+                deployment.status = "failed"
+                deployment.finished_at = datetime.utcnow()
+                db.commit()
+            return
+
+        # Phase 3: Verifying (Synthetic Health Checks)
+        deployment.status = "verifying"
+        deployment.progress = 75
+        deployment.logs = logs
+        db.commit()
+
+        cls._append_log(logs, "INFO", "Initiating post-deployment synthetic verification (Readiness + Smoke + Metrics)...")
+        health_passed = await HealthMonitorService.verify_deployment(
+            db=db,
+            deployment=deployment,
+            environment=environment,
+            project=project,
+            simulate_failure=simulate_failure
+        )
+
+        if not health_passed:
+            cls._append_log(logs, "ERROR", "Health verification failed! Endpoint response unhealthy or error SLA breached.")
+            if environment.auto_rollback_enabled:
+                cls._append_log(logs, "WARN", "Auto-rollback policy triggered by verification failure.")
+                db.commit()
+                await RollbackManager.trigger_rollback(
+                    db=db,
+                    deployment=deployment,
+                    reason="Synthetic health check or smoke test failed post-deployment",
+                    is_automated=True
+                )
+            else:
+                deployment.status = "failed"
+                deployment.finished_at = datetime.utcnow()
+                db.commit()
+            return
+
+        # Phase 4: Finalize Active
+        cls._append_log(logs, "INFO", f"All health checks passed! Promoting release '{release.version}' to ACTIVE in '{environment.name}'.")
+        deployment.status = "active"
+        deployment.progress = 100
+        deployment.finished_at = datetime.utcnow()
+        deployment.logs = logs
+
+        # Update environment's active release
+        environment.current_release_id = release.id
+        db.commit()
+
+        # Audit success
+        AuditService.log_event(
+            db=db,
+            action="deployment.success",
+            entity_type="deployment",
+            entity_id=deployment.id,
+            details={
+                "project": project.name,
+                "environment": environment.name,
+                "release": release.version,
+                "strategy": deployment.strategy
+            }
+        )

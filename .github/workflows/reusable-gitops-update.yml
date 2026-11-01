@@ -1,0 +1,94 @@
+name: Reusable GitOps image update
+
+on:
+  workflow_call:
+    inputs:
+      gitops_repository:
+        required: true
+        type: string
+      gitops_ref:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      values_file:
+        required: false
+        type: string
+        default: environments/dev/values.yaml
+      backend_image:
+        required: true
+        type: string
+      frontend_image:
+        required: true
+        type: string
+    secrets:
+      GH_PAT:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Check out GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repository }}
+          ref: ${{ inputs.gitops_ref }}
+          token: ${{ secrets.GH_PAT }}
+      - name: Update immutable image references
+        env:
+          VALUES_FILE: ${{ inputs.values_file }}
+          BACKEND_IMAGE: ${{ inputs.backend_image }}
+          FRONTEND_IMAGE: ${{ inputs.frontend_image }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["VALUES_FILE"])
+          if not path.is_file():
+              raise SystemExit(f"GitOps values file does not exist: {path}")
+          text = path.read_text()
+          blocks = {
+              "backend": {
+                  "repository:": os.environ["BACKEND_IMAGE"].rsplit(":", 1)[0],
+                  "tag:": os.environ["BACKEND_IMAGE"].rsplit(":", 1)[1],
+              },
+              "frontend": {
+                  "repository:": os.environ["FRONTEND_IMAGE"].rsplit(":", 1)[0],
+                  "tag:": os.environ["FRONTEND_IMAGE"].rsplit(":", 1)[1],
+              },
+          }
+          lines = text.splitlines(keepends=True)
+          current = None
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped in {"backend:", "frontend:"}:
+                  current = stripped[:-1]
+                  continue
+              if current and line.startswith("  ") and stripped.split(":", 1)[0] in {"repository", "tag"}:
+                  key = stripped.split(":", 1)[0] + ":"
+                  value = blocks[current][key]
+                  lines[index] = f"{line[:len(line) - len(line.lstrip())]}{key} {value}\n"
+          text = "".join(lines)
+          for component in ("backend", "frontend"):
+              if f"{component}:" not in text:
+                  raise SystemExit(f"Missing component in {path}: {component}")
+          path.write_text(text)
+          PY
+      - name: Commit and push GitOps change
+        env:
+          GITOPS_REF: ${{ inputs.gitops_ref }}
+          VALUES_FILE: ${{ inputs.values_file }}
+        run: |
+          git config user.name "releasepilot-ci"
+          git config user.email "releasepilot-ci@users.noreply.github.com"
+          git add "$VALUES_FILE"
+          git diff --cached --quiet && echo "No GitOps change required" && exit 0
+          git commit -m "chore(gitops): promote $GITHUB_SHA to ${{ inputs.environment }}"
+          git push origin "HEAD:$GITOPS_REF"

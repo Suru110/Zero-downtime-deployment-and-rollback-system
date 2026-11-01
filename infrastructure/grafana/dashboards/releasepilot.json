@@ -1,0 +1,42 @@
+{
+  "title": "ReleasePilot Overview",
+  "uid": "releasepilot-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "sum by (status) (rate(releasepilot_http_requests_total[5m]))", "legendFormat": "{{status}}"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(releasepilot_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Deployment duration",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, status) (rate(releasepilot_deployment_duration_seconds_bucket[15m])))", "legendFormat": "{{status}}"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rollouts and rollbacks",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "sum by (simulated) (rate(releasepilot_rollout_failures_total[15m]))", "legendFormat": "rollout failures {{simulated}}"},
+        {"expr": "sum by (status, simulated) (rate(releasepilot_rollbacks_total[15m]))", "legendFormat": "rollbacks {{status}} {{simulated}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Health-check results",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "targets": [{"expr": "sum by (check_type, status, simulated) (rate(releasepilot_health_checks_total[15m]))", "legendFormat": "{{check_type}} {{status}} simulated={{simulated}}"}]
+    }
+  ]
+}

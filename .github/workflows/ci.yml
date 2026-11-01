@@ -1,0 +1,54 @@
+name: ReleasePilot CI/CD
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  push:
+    branches: [main, master, develop]
+  workflow_dispatch:
+    inputs:
+      publish_images:
+        description: Publish images to the configured registry
+        required: false
+        type: boolean
+        default: false
+      environment:
+        description: GitOps environment configuration to update
+        required: false
+        type: choice
+        options: [none, dev, staging, production]
+        default: none
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  quality:
+    uses: ./.github/workflows/reusable-quality.yml
+    secrets: inherit
+
+  images:
+    needs: quality
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/reusable-images.yml
+    with:
+      registry: ${{ vars.CONTAINER_REGISTRY || '' }}
+      image_namespace: ${{ vars.IMAGE_NAMESPACE || github.repository_owner }}
+      backend_image: ${{ vars.BACKEND_IMAGE_NAME || 'releasepilot-backend' }}
+      frontend_image: ${{ vars.FRONTEND_IMAGE_NAME || 'releasepilot-frontend' }}
+      push_images: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_images || (github.event_name == 'push' && vars.PUBLISH_IMAGES == 'true') }}
+    secrets: inherit
+
+  gitops:
+    needs: images
+    if: needs.images.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.environment != 'none' && vars.GITOPS_REPOSITORY != '' && vars.GITOPS_VALUES_FILE != '' && vars.CONTAINER_REGISTRY != ''
+    uses: ./.github/workflows/reusable-gitops-update.yml
+    with:
+      gitops_repository: ${{ vars.GITOPS_REPOSITORY }}
+      gitops_ref: ${{ vars.GITOPS_REF || 'main' }}
+      environment: ${{ inputs.environment }}
+      values_file: ${{ vars.GITOPS_VALUES_FILE }}
+      backend_image: ${{ vars.CONTAINER_REGISTRY }}/${{ vars.IMAGE_NAMESPACE || github.repository_owner }}/${{ vars.BACKEND_IMAGE_NAME || 'releasepilot-backend' }}:${{ github.sha }}
+      frontend_image: ${{ vars.CONTAINER_REGISTRY }}/${{ vars.IMAGE_NAMESPACE || github.repository_owner }}/${{ vars.FRONTEND_IMAGE_NAME || 'releasepilot-frontend' }}:${{ github.sha }}
+    secrets: inherit

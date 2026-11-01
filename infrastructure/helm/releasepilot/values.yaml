@@ -1,0 +1,117 @@
+nameOverride: ""
+fullnameOverride: ""
+namespace:
+  create: false
+  name: releasepilot
+
+images:
+  backend:
+    repository: releasepilot/backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: releasepilot/frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+backend:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8000
+  strategy:
+    maxSurge: 25%
+    maxUnavailable: 0
+  resources:
+    limits: {cpu: 500m, memory: 512Mi}
+    requests: {cpu: 100m, memory: 128Mi}
+  probes:
+    startupPath: /health/live
+    livenessPath: /health/live
+    readinessPath: /health/ready
+    startupFailureThreshold: 30
+    periodSeconds: 10
+  terminationGracePeriodSeconds: 30
+  env:
+    APP_ENV: production
+    LOG_LEVEL: INFO
+    ENABLE_MOCK_ADAPTERS: "false"
+  rbac:
+    create: true
+    deploymentReadWrite: true
+    clusterWide: false
+
+frontend:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+  strategy:
+    maxSurge: 25%
+    maxUnavailable: 0
+  resources:
+    limits: {cpu: 200m, memory: 256Mi}
+    requests: {cpu: 50m, memory: 64Mi}
+  probes:
+    path: /
+    periodSeconds: 10
+  terminationGracePeriodSeconds: 15
+
+database:
+  enabled: false
+  image: postgres:16-alpine
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+  resources:
+    limits: {cpu: 500m, memory: 512Mi}
+    requests: {cpu: 100m, memory: 128Mi}
+
+secrets:
+  create: false
+  existingSecret: releasepilot-secrets
+  databaseUrl: ""
+  databaseName: releasepilot
+  databaseUser: releasepilot
+  databasePassword: ""
+  jwtSecretKey: ""
+  adminInitialPassword: ""
+
+config:
+  corsOrigins: '["http://localhost:5173"]'
+  accessTokenExpireMinutes: "1440"
+  defaultRollbackEnabled: "true"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: releasepilot.local
+  tls: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: false
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s

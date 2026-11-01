@@ -1,0 +1,18 @@
+# Staging desired state. CI updates only the immutable image tags.
+images:
+  backend:
+    repository: ghcr.io/example-org/releasepilot-backend
+    tag: replace-with-commit-sha
+  frontend:
+    repository: ghcr.io/example-org/releasepilot-frontend
+    tag: replace-with-commit-sha
+
+database:
+  enabled: false
+secrets:
+  create: false
+  existingSecret: releasepilot-secrets
+ingress:
+  enabled: true
+  className: nginx
+  host: releasepilot-staging.example.invalid

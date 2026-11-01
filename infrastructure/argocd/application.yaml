@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: releasepilot-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example-org/releasepilot-gitops.git
+    targetRevision: main
+    path: environments/dev
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: releasepilot
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

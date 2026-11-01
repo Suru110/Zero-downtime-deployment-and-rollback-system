@@ -1,0 +1,29 @@
+groups:
+  - name: releasepilot
+    rules:
+      - alert: ReleasePilotRolloutFailures
+        expr: increase(releasepilot_rollout_failures_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: ReleasePilot rollout failure detected
+          description: A rollout failed in the last ten minutes.
+      - alert: ReleasePilotSustainedHttpErrors
+        expr: |
+          sum(rate(releasepilot_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(releasepilot_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: ReleasePilot sustained HTTP error rate
+          description: More than five percent of requests returned 5xx for ten minutes.
+      - alert: ReleasePilotRollbackFailure
+        expr: increase(releasepilot_rollbacks_total{status="failed"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: ReleasePilot rollback failed
+          description: A rollback failed verification and requires operator attention.

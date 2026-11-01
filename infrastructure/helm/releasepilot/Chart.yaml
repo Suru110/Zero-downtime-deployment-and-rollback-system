@@ -1,0 +1,9 @@
+apiVersion: v2
+name: releasepilot
+description: A production-ready Helm chart for the ReleasePilot deployment and automated rollback platform.
+type: application
+version: 0.2.0
+appVersion: "1.0.0"
+maintainers:
+  - name: Platform Engineering Team
+    email: platform@releasepilot.local

@@ -1,0 +1,35 @@
+{{- if and .Values.serviceAccount.create .Values.backend.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRole" "Role" .Values.backend.rbac.clusterWide }}
+metadata:
+  name: {{ include "releasepilot.fullname" . }}-backend
+  labels:
+    {{- include "releasepilot.labels" . | nindent 4 }}
+rules:
+  {{- if .Values.backend.rbac.deploymentReadWrite }}
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  {{- else }}
+  - apiGroups: []
+    resources: []
+    verbs: []
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRoleBinding" "RoleBinding" .Values.backend.rbac.clusterWide }}
+metadata:
+  name: {{ include "releasepilot.fullname" . }}-backend
+  labels:
+    {{- include "releasepilot.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "releasepilot.serviceAccountName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: {{ ternary "ClusterRole" "Role" .Values.backend.rbac.clusterWide }}
+  name: {{ include "releasepilot.fullname" . }}-backend
+{{- end }}

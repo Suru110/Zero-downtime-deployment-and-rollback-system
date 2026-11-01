@@ -1,0 +1,101 @@
+name: Reusable image build and scan
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        required: false
+        type: string
+        default: ""
+      image_namespace:
+        required: true
+        type: string
+      backend_image:
+        required: true
+        type: string
+      frontend_image:
+        required: true
+        type: string
+      push_images:
+        required: false
+        type: boolean
+        default: false
+      trivy_severity:
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+    secrets:
+      REGISTRY_USERNAME:
+        required: false
+      REGISTRY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ${{ inputs.registry }}
+      NAMESPACE: ${{ inputs.image_namespace }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate publishing configuration
+        if: inputs.push_images
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          test -n "$REGISTRY" || { echo "::error::CONTAINER_REGISTRY is required when publishing"; exit 1; }
+          test -n "$REGISTRY_USERNAME" || { echo "::error::REGISTRY_USERNAME is required when publishing"; exit 1; }
+          test -n "$REGISTRY_PASSWORD" || { echo "::error::REGISTRY_PASSWORD is required when publishing"; exit 1; }
+      - name: Log in to container registry
+        if: inputs.push_images
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: ${{ inputs.push_images }}
+          load: ${{ !inputs.push_images }}
+          tags: ${{ inputs.registry && format('{0}/{1}/{2}:{3}', inputs.registry, inputs.image_namespace, inputs.backend_image, github.sha) || format('releasepilot-backend:{0}', github.sha) }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: ${{ inputs.push_images }}
+          load: ${{ !inputs.push_images }}
+          tags: ${{ inputs.registry && format('{0}/{1}/{2}:{3}', inputs.registry, inputs.image_namespace, inputs.frontend_image, github.sha) || format('releasepilot-frontend:{0}', github.sha) }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan backend image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.registry && format('{0}/{1}/{2}:{3}', inputs.registry, inputs.image_namespace, inputs.backend_image, github.sha) || format('releasepilot-backend:{0}', github.sha) }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: ${{ inputs.trivy_severity }}
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.registry && format('{0}/{1}/{2}:{3}', inputs.registry, inputs.image_namespace, inputs.frontend_image, github.sha) || format('releasepilot-frontend:{0}', github.sha) }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: ${{ inputs.trivy_severity }}

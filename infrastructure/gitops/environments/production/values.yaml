@@ -1,0 +1,25 @@
+# Production desired state. Keep secrets in the cluster or an external secret
+# manager; never add them to this file.
+images:
+  backend:
+    repository: ghcr.io/example-org/releasepilot-backend
+    tag: replace-with-approved-commit-sha
+  frontend:
+    repository: ghcr.io/example-org/releasepilot-frontend
+    tag: replace-with-approved-commit-sha
+
+backend:
+  replicaCount: 3
+  env:
+    APP_ENV: production
+    LOG_LEVEL: INFO
+    ENABLE_MOCK_ADAPTERS: "false"
+database:
+  enabled: false
+secrets:
+  create: false
+  existingSecret: releasepilot-secrets
+ingress:
+  enabled: true
+  className: nginx
+  host: releasepilot.example.invalid

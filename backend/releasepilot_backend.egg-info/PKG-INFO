@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: releasepilot-backend
+Version: 0.1.0
+Summary: ReleasePilot Core API & Deployment Engine
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
+# ReleasePilot backend
+
+## Local setup
+
+Create a virtual environment, install `requirements.txt`, copy the repository
+`.env.example` to `.env`, and run:
+
+```bash
+alembic upgrade head
+python -m app.core.seed
+uvicorn app.main:app --reload --port 8000
+```
+
+The default configuration uses the simulated adapters. Set
+`ENABLE_MOCK_ADAPTERS=false` only when a Kubernetes context, Argo CD, Trivy,
+and Prometheus endpoints are configured. Simulated responses are marked with
+`is_simulated=true` and are never presented as live cluster results.
