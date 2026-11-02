@@ -11,6 +11,8 @@ os.environ["ENABLE_MOCK_ADAPTERS"] = "true"
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-1234567890"
 
 from app.core.database import Base
+from app.core.config import settings
+settings.DATABASE_URL = "sqlite:///:memory:"
 import app.models  # ensure models are loaded
 from app.api.deps import get_db
 from app.main import app

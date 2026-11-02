@@ -12,13 +12,15 @@ from app.core.logging import get_logger
 from app.core.metrics import REQUESTS, REQUEST_LATENCY
 from uuid import uuid4
 import time
+import os
 
 logger = get_logger("releasepilot.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Applying ReleasePilot database migrations...")
-    run_migrations()
+    if not settings.DATABASE_URL.startswith("sqlite:///:memory:") and not os.environ.get("PYTEST_CURRENT_TEST"):
+        logger.info("Applying ReleasePilot database migrations...")
+        run_migrations()
     logger.info("Ensuring database tables exist...")
     init_db()
     logger.info("ReleasePilot API initialized and ready.")

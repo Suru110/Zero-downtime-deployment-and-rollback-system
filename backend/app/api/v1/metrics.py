@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user
@@ -61,3 +63,44 @@ async def get_environment_telemetry(
     metrics_adapter = get_metrics_adapter()
     data = await metrics_adapter.get_telemetry(project.name, env.k8s_namespace)
     return ApiResponse(success=True, data=data)
+
+@router.get("/deployment-trend", response_model=ApiResponse[list])
+def get_deployment_trend(
+    days: int = 7,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return daily deployment counts (successful + failed) for the past N days."""
+    owned_projects = (
+        db.query(Project).filter(Project.owner_id == current_user.id).subquery()
+    )
+    since = datetime.utcnow() - timedelta(days=days)
+    deployments = (
+        db.query(Deployment)
+        .join(owned_projects, Deployment.project_id == owned_projects.c.id)
+        .filter(Deployment.started_at >= since)
+        .all()
+    )
+
+    # Aggregate by day
+    buckets: dict = defaultdict(lambda: {"deployments": 0, "successful": 0, "failed": 0})
+    for dep in deployments:
+        key = dep.started_at.strftime("%Y-%m-%d")
+        buckets[key]["day"] = dep.started_at.strftime("%a")
+        buckets[key]["deployments"] += 1
+        if dep.status == "active":
+            buckets[key]["successful"] += 1
+        elif dep.status in ("failed", "rolled_back"):
+            buckets[key]["failed"] += 1
+
+    # Fill in missing days with zero counts
+    result = []
+    for i in range(days - 1, -1, -1):
+        date = datetime.utcnow() - timedelta(days=i)
+        key = date.strftime("%Y-%m-%d")
+        day_label = date.strftime("%a")
+        entry = dict(buckets.get(key, {"day": day_label, "deployments": 0, "successful": 0, "failed": 0}))
+        entry["day"] = day_label
+        result.append(entry)
+
+    return ApiResponse(success=True, data=result)

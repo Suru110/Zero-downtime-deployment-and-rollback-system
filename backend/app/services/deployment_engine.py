@@ -79,7 +79,30 @@ class DeploymentEngine:
         cls._append_log(logs, "INFO", f"Starting deployment pipeline for '{project.name}' -> environment '{environment.name}'")
         image_reference = release.image_reference or f"{project.image_repository}:{release.image_tag}"
         cls._append_log(logs, "INFO", f"Target release: {release.version} (Image: {image_reference})")
-        
+
+        # Phase 0: Pre-flight validation
+        cls._append_log(logs, "INFO", "Running pre-flight environment and configuration validations...")
+        if not (1 <= project.default_port <= 65535):
+            cls._append_log(logs, "ERROR", f"Pre-flight failed: Invalid configured port {project.default_port}.")
+            cls._finalize_failed_deployment(deployment, logs, deployment_started)
+            db.commit()
+            return
+
+        if not release.image_reference and not (project.image_repository and release.image_tag):
+            cls._append_log(logs, "ERROR", "Pre-flight failed: Release image reference cannot be resolved.")
+            cls._finalize_failed_deployment(deployment, logs, deployment_started)
+            db.commit()
+            return
+
+        k8s_adapter = get_deployment_adapter()
+        if not k8s_adapter.is_simulated and not getattr(k8s_adapter, "_k8s_client", None):
+            cls._append_log(logs, "ERROR", "Pre-flight failed: Kubernetes cluster unreachable. Real cluster mode is active but connection failed.")
+            cls._finalize_failed_deployment(deployment, logs, deployment_started)
+            db.commit()
+            return
+
+        cls._append_log(logs, "INFO", "Pre-flight validations passed successfully.")
+
         deployment.status = "scanning"
         deployment.progress = 15
         deployment.logs = logs

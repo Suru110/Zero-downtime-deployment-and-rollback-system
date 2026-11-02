@@ -60,6 +60,7 @@ async def trigger_manual_rollback(
             message="Rollback triggered and completed successfully."
         )
     except ValueError as e:
+        detail = str(e)
         if str(e) == "No previous release available for rollback" and deployment.status in {
             "pending", "scanning", "deploying", "verifying", "rolling_back"
         }:
@@ -73,4 +74,8 @@ async def trigger_manual_rollback(
             deployment.finished_at = datetime.utcnow()
             deployment.logs = logs
             db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+            detail = (
+                "No previous release available for rollback. "
+                "The deployment was marked failed and can be deployed again."
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)

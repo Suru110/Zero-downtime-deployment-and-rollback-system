@@ -80,31 +80,123 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
         
         try:
             from kubernetes import client
-            # Patch deployment image
-            self._log(logs, "INFO", f"Triggering deployment patch for '{app_name}' in namespace '{namespace}'")
-            patch_body = {
-                "spec": {
-                    "replicas": replicas,
-                    "template": {
-                        "spec": {
-                            "containers": [
-                                {
-                                    "name": app_name,
-                                    "image": image,
-                                    "ports": [{"containerPort": port}],
-                                    "env": [{"name": k, "value": v} for k, v in env_vars.items()]
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-            self._k8s_client.patch_namespaced_deployment(
-                name=app_name,
-                namespace=namespace,
-                body=patch_body
+
+            # Ensure namespace exists
+            try:
+                self._core_client.read_namespace(name=namespace)
+                self._log(logs, "INFO", f"Namespace '{namespace}' exists.")
+            except Exception as exc:
+                from kubernetes import client
+                if not isinstance(exc, client.ApiException) or exc.status != 404:
+                    raise
+                ns_body = client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
+                self._core_client.create_namespace(body=ns_body)
+                self._log(logs, "INFO", f"Created namespace '{namespace}'.")
+
+            # Build full Deployment manifest with rolling update strategy and probes
+            deployment_env = dict(env_vars)
+            health_path = deployment_env.pop("HEALTH_PATH", "/healthz")
+            deployment_manifest = client.V1Deployment(
+                metadata=client.V1ObjectMeta(
+                    name=app_name,
+                    namespace=namespace,
+                    labels={"app": app_name, "managed-by": "releasepilot"},
+                ),
+                spec=client.V1DeploymentSpec(
+                    replicas=replicas,
+                    selector=client.V1LabelSelector(match_labels={"app": app_name}),
+                    strategy=client.V1DeploymentStrategy(
+                        type="RollingUpdate",
+                        rolling_update=client.V1RollingUpdateDeployment(
+                            max_surge=1,
+                            max_unavailable=0,
+                        ),
+                    ),
+                    template=client.V1PodTemplateSpec(
+                        metadata=client.V1ObjectMeta(labels={"app": app_name}),
+                        spec=client.V1PodSpec(
+                            termination_grace_period_seconds=30,
+                            containers=[
+                                client.V1Container(
+                                    name=app_name,
+                                    image=image,
+                                    ports=[client.V1ContainerPort(container_port=port)],
+                                    env=[
+                                        client.V1EnvVar(name=k, value=v)
+                                        for k, v in deployment_env.items()
+                                    ],
+                                    startup_probe=client.V1Probe(
+                                        http_get=client.V1HTTPGetAction(
+                                            path=health_path,
+                                            port=port,
+                                        ),
+                                        failure_threshold=30,
+                                        period_seconds=5,
+                                    ),
+                                    readiness_probe=client.V1Probe(
+                                        http_get=client.V1HTTPGetAction(
+                                            path=health_path,
+                                            port=port,
+                                        ),
+                                        initial_delay_seconds=5,
+                                        period_seconds=10,
+                                        timeout_seconds=5,
+                                        failure_threshold=3,
+                                    ),
+                                    liveness_probe=client.V1Probe(
+                                        http_get=client.V1HTTPGetAction(
+                                            path=health_path,
+                                            port=port,
+                                        ),
+                                        initial_delay_seconds=15,
+                                        period_seconds=20,
+                                        timeout_seconds=5,
+                                        failure_threshold=3,
+                                    ),
+                                )
+                            ],
+                        ),
+                    ),
+                ),
             )
-            self._log(logs, "INFO", f"Updated image to '{image}' with {replicas} replicas.")
+
+            # Also ensure a Service exists for this deployment
+            svc_manifest = client.V1Service(
+                metadata=client.V1ObjectMeta(
+                    name=app_name,
+                    namespace=namespace,
+                    labels={"app": app_name, "managed-by": "releasepilot"},
+                ),
+                spec=client.V1ServiceSpec(
+                    selector={"app": app_name},
+                    ports=[client.V1ServicePort(port=port, target_port=port)],
+                    type="ClusterIP",
+                ),
+            )
+
+            # Create-or-patch Deployment
+            try:
+                self._k8s_client.read_namespaced_deployment(name=app_name, namespace=namespace)
+                self._k8s_client.patch_namespaced_deployment(
+                    name=app_name, namespace=namespace, body=deployment_manifest
+                )
+                self._log(logs, "INFO", f"Patched existing Deployment '{app_name}' to image '{image}' with {replicas} replicas.")
+            except Exception as exc:
+                if not isinstance(exc, client.ApiException) or exc.status != 404:
+                    raise
+                self._k8s_client.create_namespaced_deployment(namespace=namespace, body=deployment_manifest)
+                self._log(logs, "INFO", f"Created new Deployment '{app_name}' with image '{image}', {replicas} replicas.")
+
+            # Create-or-patch Service
+            try:
+                self._core_client.read_namespaced_service(name=app_name, namespace=namespace)
+                self._core_client.patch_namespaced_service(name=app_name, namespace=namespace, body=svc_manifest)
+                self._log(logs, "INFO", f"Patched existing Service '{app_name}'.")
+            except Exception as exc:
+                if not isinstance(exc, client.ApiException) or exc.status != 404:
+                    raise
+                self._core_client.create_namespaced_service(namespace=namespace, body=svc_manifest)
+                self._log(logs, "INFO", f"Created Service '{app_name}' on port {port}.")
             ready = 0
             for _ in range(settings.DEFAULT_HEALTH_CHECK_MAX_ATTEMPTS):
                 deployment = self._k8s_client.read_namespaced_deployment(

@@ -13,7 +13,7 @@ class Project(Base):
     git_repo = Column(String(255), nullable=False)
     default_branch = Column(String(50), default="main", nullable=False)
     image_repository = Column(String(255), nullable=False)
-    default_port = Column(Integer, default=8080, nullable=False)
+    default_port = Column(Integer, default=3000, nullable=False)
     health_path = Column(String(100), default="/healthz", nullable=False)
     owner_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

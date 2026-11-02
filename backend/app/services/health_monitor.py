@@ -88,7 +88,8 @@ class HealthMonitorService:
         else:
             url = environment.smoke_test_endpoint or project.health_path
             if not url.startswith(("http://", "https://")):
-                url = f"http://{project.name}.{environment.k8s_namespace}.svc.cluster.local{url}"
+                port_suffix = f":{project.default_port}" if project.default_port and project.default_port != 80 else ""
+                url = f"http://{project.name}.{environment.k8s_namespace}.svc.cluster.local{port_suffix}{url}"
             for attempt in range(1, environment.verification_attempts + 1):
                 try:
                     async with httpx.AsyncClient(timeout=environment.smoke_test_timeout_seconds) as client:

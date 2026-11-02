@@ -15,7 +15,7 @@ from app.adapters.monitoring.mock_prometheus_adapter import MockPrometheusAdapte
 from app.adapters.monitoring.prometheus_adapter import ProductionPrometheusAdapter
 
 def get_deployment_adapter() -> BaseDeploymentAdapter:
-    if settings.ENABLE_MOCK_ADAPTERS:
+    if settings.KUBERNETES_MODE.lower() == "mock":
         return MockKubernetesAdapter()
     return ProductionKubernetesAdapter()
 

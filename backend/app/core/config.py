@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     # Adapters & Simulation
     ENABLE_MOCK_ADAPTERS: bool = True
+    KUBERNETES_MODE: str = "mock"
     KUBERNETES_IN_CLUSTER: bool = False
     KUBECONFIG_PATH: Optional[str] = None
     K8S_DEFAULT_NAMESPACE: str = "default"
