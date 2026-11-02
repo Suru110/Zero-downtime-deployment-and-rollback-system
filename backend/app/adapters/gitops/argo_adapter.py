@@ -32,21 +32,20 @@ class ProductionArgoCDAdapter(BaseGitOpsAdapter):
                         details=data,
                         logs=logs
                     )
-                else:
-                    logs.append({"timestamp": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "message": f"Argo CD API returned HTTP {res.status_code}: {res.text}"})
-                    return AdapterResult(
-                        success=False,
-                        is_simulated=False,
-                        adapter_name=self.adapter_name,
-                        message=f"Argo CD returned HTTP {res.status_code}",
-                        logs=logs
-                    )
+                logs.append({"timestamp": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "message": f"Argo CD API returned HTTP {res.status_code}: {res.text}"})
+                return AdapterResult(
+                    success=False,
+                    is_simulated=False,
+                    adapter_name=self.adapter_name,
+                    message=f"Argo CD returned HTTP {res.status_code}",
+                    logs=logs
+                )
         except Exception as e:
-            logs.append({"timestamp": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "message": f"Argo CD connection failed: {str(e)}"})
+            logs.append({"timestamp": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "message": f"Argo CD connection failed: {e!s}"})
             return AdapterResult(
                 success=False,
                 is_simulated=False,
                 adapter_name=self.adapter_name,
-                message=f"Argo CD unreachable: {str(e)}",
+                message=f"Argo CD unreachable: {e!s}",
                 logs=logs
             )

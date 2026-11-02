@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings
 from app.core.database import Base
-import app.models  # load all models
 
 config = context.config
 if config.config_file_name is not None:

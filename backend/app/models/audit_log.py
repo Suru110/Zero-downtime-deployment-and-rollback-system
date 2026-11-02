@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, JSON, DateTime, ForeignKey, Index
+from sqlalchemy import Column, String, JSON, DateTime, ForeignKey, Index
 from app.core.database import Base
 
 class AuditLog(Base):

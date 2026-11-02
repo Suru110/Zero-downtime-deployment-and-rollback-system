@@ -1,8 +1,7 @@
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user, get_owned_project
-from app.models.project import Project
 from app.models.release import Release
 from app.models.user import User
 from app.schemas.release import ReleaseCreate, ReleaseOut, ScanReport

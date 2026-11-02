@@ -1,0 +1,63 @@
+# -------------------------------
+# Ruff configuration file
+# -------------------------------
+
+fix = true
+include = [
+    "*.py", 
+    "*.pyi", 
+    "**/pyproject.toml"
+]
+exclude = ["**/node_modules/**","**/.git/**","**/target/**","**/.github/**","**/.vscode/**","**/.idea/**","**/__pycache__/**","**/.venv/**","**/.env/**","**/venv/**","**/env/**","**/.conda/**","**/anaconda3/**","**/miniconda3/**","**/build/**","**/dist/**","**/.eggs/**","**/*.egg-info/**","**/.pytest_cache/**","**/.mypy_cache/**","**/.ruff_cache/**","**/.ipynb_checkpoints/**","**/.DS_Store/**","**/.tox/**","**/.nox/**","**/htmlcov/**","**/.coverage/**","**/.out/**","**/debug/**","**/Debug/**","**/release/**","**/Release/**","**/bin/**","**/Bin/**","**/obj/**","**/Obj/**","**/packages/**","**/generated files/**","**/test_*.py","**/*_test.py","**/*_tests.py","**/test.py","**/tests.py","**/tests/**","**/test/**","**/__tests__/**"]
+
+[lint]
+fixable = ["ALL"]
+unfixable = []
+select = [
+    "ASYNC", # async checks
+    "B", # bugbear checks
+    "ERA", # remove connected out code
+    "F", # pyflakes checks
+    "FIX", # fixme checks
+    "Q", # flake8-quotes checks
+    "RET", # flake8-return check
+    "RSE", # raise exception parantheses check
+    "RUF", # RUF specific rules
+    "SIM", # flake8-simplify check
+    "T20", # typing checks
+    "W", # pycodestyle warning checks
+    "T100", # Debugger,
+    "S", # Bandit checks
+]
+ignore = [
+    "D100", # allow missing docstring in public module
+    "D104", # allow missing docstring in public package
+    "D418", # allow overload to have a docstring
+    "TD003", # allow missing link to todo issue
+    "FIX002", # allow todo
+    "B027", # allow empty non-abstract method in ABC
+    "D101", # allow missing docstring in public class
+    "D102", # allow missing docstring in public method
+    "D103", # allow missing docstring in public function
+    "E501", # allow line length longer than 79 characters
+    "S101", # allow use of assert statement
+    "SIM102", # allow use of 'if len(x) == 0' instead of 'if not x'
+    "T201", # allow use of 'print' flag
+    "W191", # allow indentation with tabs
+    "W291", # allow trailing whitespace
+    "W293", # allow blank line contains whitespace
+    "ERA001", # allow commented out code
+    "Q000", # allow any quote style
+    "S311", # allow use of pickle module
+    "F541", # allow f-string with backslash
+    "S310", # allow use of marshal module
+    "B006", # allow use of mutable data structure as default argument
+    "SIM112", # allow use of 'x == True' instead of 'if x'
+    "SIM117", # allow use of 'x is not None' instead of 'if x is not None'
+    "B905", # allow use of 'is' operator with literals
+    "RET504", # allow use of bare 'return' in __init__
+    "B904", # allow use of 'len(x) > 0' instead of 'if x'
+    "B007", # allow use of 'isinstance' with a tuple of types
+    "SIM105", # allow use of 'if x == y' instead of 'if x is y'
+    "SIM401", # allow use of 'x is None' instead of 'if x is None'
+]

@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from app.models.deployment import Deployment
 from app.models.environment import Environment

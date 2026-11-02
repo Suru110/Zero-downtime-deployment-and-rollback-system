@@ -36,5 +36,4 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     """Create all tables if they do not exist."""
-    import app.models  # ensure all models are imported before creating tables
     Base.metadata.create_all(bind=engine)

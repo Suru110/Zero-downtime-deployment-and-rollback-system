@@ -25,7 +25,7 @@ def sanitize_data(data: Any) -> Any:
             else:
                 sanitized[k] = sanitize_data(v)
         return sanitized
-    elif isinstance(data, list):
+    if isinstance(data, list):
         return [sanitize_data(item) for item in data]
     return data
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
+from pydantic import field_validator
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_URL = f"sqlite:///{(BACKEND_ROOT / 'releasepilot.db').as_posix()}"

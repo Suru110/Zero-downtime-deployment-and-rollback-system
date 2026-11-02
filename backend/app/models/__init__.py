@@ -8,12 +8,12 @@ from app.models.rollback import RollbackEvent
 from app.models.audit_log import AuditLog
 
 __all__ = [
-    "User",
-    "Project",
-    "Environment",
-    "Release",
-    "Deployment",
-    "HealthCheck",
-    "RollbackEvent",
     "AuditLog",
+    "Deployment",
+    "Environment",
+    "HealthCheck",
+    "Project",
+    "Release",
+    "RollbackEvent",
+    "User",
 ]

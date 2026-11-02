@@ -5,7 +5,6 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.adapters import get_deployment_adapter, get_metrics_adapter
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.deployment import Deployment
 from app.models.environment import Environment

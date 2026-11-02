@@ -1,8 +1,7 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user, get_owned_deployment
-from app.models.deployment import Deployment
 from app.models.health_check import HealthCheck
 from app.models.user import User
 from app.schemas.health_check import HealthCheckOut

@@ -32,19 +32,18 @@ class ProductionTrivyScannerAdapter(BaseSecurityScannerAdapter):
                         "low_count": 0,
                         "vulnerabilities": []
                     }
-                else:
-                    return {
-                        "is_simulated": False,
-                        "status": "error",
-                        "image_ref": image_ref,
-                        "scanner": self.adapter_name,
-                        "error": f"Trivy server returned HTTP {res.status_code}"
-                    }
+                return {
+                    "is_simulated": False,
+                    "status": "error",
+                    "image_ref": image_ref,
+                    "scanner": self.adapter_name,
+                    "error": f"Trivy server returned HTTP {res.status_code}"
+                }
         except Exception as e:
             return {
                 "is_simulated": False,
                 "status": "unreachable",
                 "image_ref": image_ref,
                 "scanner": self.adapter_name,
-                "error": f"Trivy server unreachable at {settings.TRIVY_SERVER_URL}: {str(e)}"
+                "error": f"Trivy server unreachable at {settings.TRIVY_SERVER_URL}: {e!s}"
             }

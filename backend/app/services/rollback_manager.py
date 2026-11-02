@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional
 from sqlalchemy.orm import Session
 from app.models.deployment import Deployment
 from app.models.environment import Environment

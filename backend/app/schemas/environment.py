@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field, ConfigDict
 
 class EnvironmentBase(BaseModel):
