@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
@@ -145,9 +146,26 @@ async def trigger_deployment(
     def run_deployment(deployment_id: str, should_fail: bool) -> None:
         with SessionLocal() as task_db:
             import asyncio
-            asyncio.run(DeploymentEngine.execute_deployment(
-                db=task_db, deployment_id=deployment_id, simulate_failure=should_fail
-            ))
+            try:
+                asyncio.run(DeploymentEngine.execute_deployment(
+                    db=task_db, deployment_id=deployment_id, simulate_failure=should_fail
+                ))
+            except Exception as exc:
+                deployment = task_db.query(Deployment).filter(
+                    Deployment.id == deployment_id
+                ).first()
+                if deployment and deployment.status not in {"active", "rolled_back", "failed", "cancelled"}:
+                    logs = list(deployment.logs or [])
+                    logs.append({
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "level": "ERROR",
+                        "message": f"Deployment execution stopped unexpectedly: {exc}",
+                    })
+                    deployment.status = "failed"
+                    deployment.finished_at = datetime.utcnow()
+                    deployment.logs = logs
+                    task_db.commit()
+                raise
 
     # Test clients commonly use an in-memory SQLite connection, which cannot
     # be reopened by a background task. The caller can drive the engine

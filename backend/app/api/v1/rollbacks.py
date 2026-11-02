@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user, get_owned_deployment
@@ -59,4 +60,17 @@ async def trigger_manual_rollback(
             message="Rollback triggered and completed successfully."
         )
     except ValueError as e:
+        if str(e) == "No previous release available for rollback" and deployment.status in {
+            "pending", "scanning", "deploying", "verifying", "rolling_back"
+        }:
+            logs = list(deployment.logs or [])
+            logs.append({
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "level": "WARN",
+                "message": "Rollback was not run because no previous release exists; deployment marked failed.",
+            })
+            deployment.status = "failed"
+            deployment.finished_at = datetime.utcnow()
+            deployment.logs = logs
+            db.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
