@@ -14,14 +14,20 @@ router = APIRouter(prefix="/metrics", tags=["Metrics & Observability"])
 @router.get("/system-stats", response_model=ApiResponse[dict])
 def get_system_stats(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    total_projects = db.query(Project).count()
-    total_environments = db.query(Environment).count()
-    total_deployments = db.query(Deployment).count()
-    active_deployments = db.query(Deployment).filter(Deployment.status == "active").count()
-    failed_deployments = db.query(Deployment).filter(Deployment.status == "failed").count()
-    rollback_count = db.query(RollbackEvent).count()
+    owned_projects = db.query(Project).filter(Project.owner_id == current_user.id).subquery()
+    total_projects = db.query(Project).filter(Project.owner_id == current_user.id).count()
+    total_environments = db.query(Environment).join(owned_projects, Environment.project_id == owned_projects.c.id).count()
+    total_deployments = db.query(Deployment).join(owned_projects, Deployment.project_id == owned_projects.c.id).count()
+    active_deployments = db.query(Deployment).join(owned_projects, Deployment.project_id == owned_projects.c.id).filter(Deployment.status == "active").count()
+    failed_deployments = db.query(Deployment).join(owned_projects, Deployment.project_id == owned_projects.c.id).filter(Deployment.status == "failed").count()
+    rollback_count = (
+        db.query(RollbackEvent)
+        .join(Deployment, Deployment.id == RollbackEvent.source_deployment_id)
+        .join(owned_projects, Deployment.project_id == owned_projects.c.id)
+        .count()
+    )
 
     success_rate = 0.0
     if total_deployments > 0:
@@ -45,10 +51,10 @@ def get_system_stats(
 async def get_environment_telemetry(
     environment_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     env = db.query(Environment).filter(Environment.id == environment_id).first()
-    if not env:
+    if not env or env.project.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
     
     project = env.project

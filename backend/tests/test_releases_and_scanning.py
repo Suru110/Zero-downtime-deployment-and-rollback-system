@@ -26,3 +26,24 @@ def test_release_lifecycle_and_scan(client, admin_token_headers):
     scan_data = scan_resp.json()["data"]
     assert "critical_count" in scan_data
     assert scan_data["is_simulated"] is True
+
+
+def test_release_persists_exact_image_reference(client, admin_token_headers):
+    project_response = client.post("/api/v1/projects", json={
+        "name": "release-image-reference",
+        "git_repo": "https://github.com/org/release-image-reference.git",
+        "image_repository": "docker.io/org/release-image-reference",
+    }, headers=admin_token_headers)
+    project_id = project_response.json()["data"]["id"]
+
+    response = client.post(f"/api/v1/projects/{project_id}/releases", json={
+        "version": "v1.0.0",
+        "git_commit": "abcdef1234567890abcdef1234567890abcdef12",
+        "image_tag": "published",
+        "image_reference": "docker.io/org/release-image-reference:published",
+    }, headers=admin_token_headers)
+
+    assert response.status_code == 201
+    release = response.json()["data"]
+    assert release["image_reference"] == "docker.io/org/release-image-reference:published"
+    assert release["build_status"] == "published"

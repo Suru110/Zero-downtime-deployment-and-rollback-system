@@ -2,7 +2,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
-from app.api.deps import get_db, get_current_user, require_roles
+from app.api.deps import get_db, get_current_user, get_owned_deployment, get_owned_project
 from app.models.deployment import Deployment
 from app.models.project import Project
 from app.models.environment import Environment
@@ -12,6 +12,7 @@ from app.schemas.deployment import DeploymentTrigger, DeploymentOut
 from app.schemas.common import ApiResponse
 from app.services.deployment_engine import DeploymentEngine
 from app.services.audit_service import AuditService
+from app.api.v1.releases import IMAGE_REFERENCE_PATTERN
 
 router = APIRouter(prefix="/deployments", tags=["Deployments"])
 
@@ -22,9 +23,9 @@ def list_deployments(
     limit: int = 50,
     skip: int = 0,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    query = db.query(Deployment)
+    query = db.query(Deployment).join(Project).filter(Project.owner_id == current_user.id)
     if project_id:
         query = query.filter(Deployment.project_id == project_id)
     if environment_id:
@@ -40,11 +41,9 @@ async def trigger_deployment(
     payload: DeploymentTrigger,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator", "developer"]))
+    current_user: User = Depends(get_current_user)
 ):
-    project = db.query(Project).filter(Project.id == payload.project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = get_owned_project(db, payload.project_id, current_user)
 
     environment = db.query(Environment).filter(
         Environment.id == payload.environment_id,
@@ -59,6 +58,16 @@ async def trigger_deployment(
     ).first()
     if not release:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found")
+    if release.build_status != "published" or not release.image_reference:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The selected release is not published and cannot be deployed.",
+        )
+    if not IMAGE_REFERENCE_PATTERN.fullmatch(release.image_reference):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The selected release has an invalid image reference.",
+        )
 
     if payload.idempotency_key:
         existing = db.query(Deployment).filter(
@@ -89,6 +98,11 @@ async def trigger_deployment(
         )
 
     strategy = payload.override_strategy or environment.deployment_strategy
+    if strategy not in {"rolling", "canary"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Deployment strategy must be rolling or canary.",
+        )
 
     deployment = Deployment(
         project_id=project.id,
@@ -156,20 +170,16 @@ async def trigger_deployment(
 def get_deployment(
     deployment_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
-    if not deployment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    deployment = get_owned_deployment(db, deployment_id, current_user)
     return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment))
 
 @router.get("/{deployment_id}/logs", response_model=ApiResponse[List[dict]])
 def get_deployment_logs(
     deployment_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
-    if not deployment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    deployment = get_owned_deployment(db, deployment_id, current_user)
     return ApiResponse(success=True, data=deployment.logs or [])

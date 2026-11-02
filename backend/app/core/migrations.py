@@ -45,6 +45,7 @@ def _legacy_baseline() -> str | None:
 
 def run_migrations() -> None:
     """Upgrade the configured database, preserving unversioned legacy data."""
+    logger.info("Checking database migration state.")
     baseline = None
     if not _has_revision():
         baseline = _legacy_baseline()
@@ -57,5 +58,6 @@ def run_migrations() -> None:
 
     logger.info("Applying database migrations to head.")
     command.upgrade(_alembic_config(), "head")
+    logger.info("Database migrations completed successfully.")
     if baseline:
         logger.info("Legacy database migrated from %s to head.", baseline)

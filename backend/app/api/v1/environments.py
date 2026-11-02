@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, require_roles
+from app.api.deps import get_db, get_current_user, get_owned_project
 from app.models.project import Project
 from app.models.environment import Environment
 from app.models.user import User
@@ -15,11 +15,9 @@ router = APIRouter(prefix="/projects/{project_id}/environments", tags=["Environm
 def list_environments(
     project_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = get_owned_project(db, project_id, current_user)
     
     envs = db.query(Environment).filter(Environment.project_id == project_id).all()
     return ApiResponse(
@@ -32,11 +30,9 @@ def create_environment(
     project_id: str,
     env_in: EnvironmentCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator"]))
+    current_user: User = Depends(get_current_user)
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = get_owned_project(db, project_id, current_user)
 
     existing = db.query(Environment).filter(
         Environment.project_id == project_id,
@@ -74,13 +70,13 @@ def update_environment(
     environment_id: str,
     env_in: EnvironmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator"]))
+    current_user: User = Depends(get_current_user)
 ):
     env = db.query(Environment).filter(
         Environment.id == environment_id,
         Environment.project_id == project_id
     ).first()
-    if not env:
+    if not env or env.project.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
 
     update_data = env_in.model_dump(exclude_unset=True)

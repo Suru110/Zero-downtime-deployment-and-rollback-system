@@ -30,10 +30,14 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    connect_args = {}
+    if settings.DATABASE_URL.startswith("sqlite"):
+        connect_args["timeout"] = 30
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
         context.configure(

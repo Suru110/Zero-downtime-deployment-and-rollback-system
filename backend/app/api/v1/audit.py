@@ -15,9 +15,9 @@ def list_audit_logs(
     limit: int = 50,
     skip: int = 0,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    query = db.query(AuditLog)
+    query = db.query(AuditLog).filter(AuditLog.user_id == current_user.id)
     if entity_type:
         query = query.filter(AuditLog.entity_type == entity_type)
     logs = query.order_by(AuditLog.created_at.desc()).offset(skip).limit(limit).all()

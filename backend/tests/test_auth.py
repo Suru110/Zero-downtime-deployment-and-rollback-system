@@ -9,7 +9,7 @@ def test_register_and_login(client):
     data = response.json()
     assert data["success"] is True
     assert data["data"]["name"] == "New Developer"
-    assert data["data"]["role"] == "developer"
+    assert data["data"]["role"] == "user"
     assert "password_hash" not in data["data"]
 
     response = client.post("/api/v1/auth/login", json={

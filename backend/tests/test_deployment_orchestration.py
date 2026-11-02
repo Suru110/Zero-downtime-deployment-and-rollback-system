@@ -56,6 +56,59 @@ async def test_successful_deployment_pipeline(client, db_session, admin_token_he
     assert env.current_release_id == rel_id
 
 @pytest.mark.asyncio
+async def test_first_failed_deployment_is_terminal_and_does_not_block_retry(
+    client, db_session, admin_token_headers
+):
+    project_response = client.post("/api/v1/projects", json={
+        "name": "first-release-service",
+        "git_repo": "https://github.com/org/first-release-service.git",
+        "image_repository": "docker.io/releasepilot/first-release-service",
+        "default_port": 8080,
+        "health_path": "/healthz"
+    }, headers=admin_token_headers)
+    project_id = project_response.json()["data"]["id"]
+
+    environment_response = client.post(f"/api/v1/projects/{project_id}/environments", json={
+        "name": "staging",
+        "k8s_namespace": "first-release-staging",
+        "auto_rollback_enabled": True
+    }, headers=admin_token_headers)
+    environment_id = environment_response.json()["data"]["id"]
+
+    release_response = client.post(f"/api/v1/projects/{project_id}/releases", json={
+        "version": "v1.0.0",
+        "git_commit": "1111222233334444555566667777888899990000",
+        "image_tag": "v1.0.0"
+    }, headers=admin_token_headers)
+    release_id = release_response.json()["data"]["id"]
+
+    deployment_response = client.post("/api/v1/deployments", json={
+        "project_id": project_id,
+        "environment_id": environment_id,
+        "release_id": release_id,
+        "simulate_failure": True
+    }, headers=admin_token_headers)
+    deployment_id = deployment_response.json()["data"]["id"]
+
+    await DeploymentEngine.execute_deployment(
+        db=db_session, deployment_id=deployment_id, simulate_failure=True
+    )
+
+    failed_deployment = db_session.query(Deployment).filter(
+        Deployment.id == deployment_id
+    ).first()
+    assert failed_deployment.status == "failed"
+    assert any("Automatic rollback was not run" in log["message"] for log in failed_deployment.logs)
+
+    retry_response = client.post("/api/v1/deployments", json={
+        "project_id": project_id,
+        "environment_id": environment_id,
+        "release_id": release_id,
+        "simulate_failure": False
+    }, headers=admin_token_headers)
+    assert retry_response.status_code == 202
+
+@pytest.mark.asyncio
 async def test_automated_rollback_on_health_check_failure(client, db_session, admin_token_headers):
     # Setup Project & Environment
     proj_resp = client.post("/api/v1/projects", json={

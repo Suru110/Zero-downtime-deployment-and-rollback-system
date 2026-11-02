@@ -1,7 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, require_roles
+from app.api.deps import get_db, get_current_user, get_owned_project
 from app.models.project import Project
 from app.models.release import Release
 from app.models.user import User
@@ -9,18 +9,21 @@ from app.schemas.release import ReleaseCreate, ReleaseOut, ScanReport
 from app.schemas.common import ApiResponse
 from app.adapters import get_security_scanner_adapter
 from app.services.audit_service import AuditService
+import re
 
 router = APIRouter(prefix="/projects/{project_id}/releases", tags=["Releases"])
+
+IMAGE_REFERENCE_PATTERN = re.compile(
+    r"^(?:[a-z0-9.-]+(?::[0-9]+)?/)?[a-z0-9._/-]+:[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+)
 
 @router.get("", response_model=ApiResponse[List[ReleaseOut]])
 def list_releases(
     project_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = get_owned_project(db, project_id, current_user)
 
     releases = (
         db.query(Release)
@@ -38,11 +41,9 @@ def create_release(
     project_id: str,
     rel_in: ReleaseCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator", "developer"]))
+    current_user: User = Depends(get_current_user)
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = get_owned_project(db, project_id, current_user)
 
     existing = db.query(Release).filter(
         Release.project_id == project_id,
@@ -54,9 +55,18 @@ def create_release(
             detail=f"Release version '{rel_in.version}' already registered for this project."
         )
 
+    image_reference = rel_in.image_reference or f"{project.image_repository}:{rel_in.image_tag}"
+    if not IMAGE_REFERENCE_PATTERN.fullmatch(image_reference):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The release image reference must include a repository and tag.",
+        )
+
     release = Release(
-        **rel_in.model_dump(),
-        project_id=project_id
+        **rel_in.model_dump(exclude={"image_reference"}),
+        project_id=project_id,
+        image_reference=image_reference,
+        build_status="published",
     )
     db.add(release)
     db.commit()
@@ -79,18 +89,18 @@ async def scan_release(
     project_id: str,
     release_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator", "developer"]))
+    current_user: User = Depends(get_current_user)
 ):
     release = db.query(Release).filter(
         Release.id == release_id,
         Release.project_id == project_id
     ).first()
-    if not release:
+    if not release or release.project.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found")
 
     project = release.project
     scanner = get_security_scanner_adapter()
-    full_image_ref = f"{project.image_repository}:{release.image_tag}"
+    full_image_ref = release.image_reference or f"{project.image_repository}:{release.image_tag}"
 
     scan_result = await scanner.scan_image(full_image_ref)
 
@@ -128,8 +138,9 @@ def compare_releases(
     from_release_id: str,
     to_release_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    get_owned_project(db, project_id, current_user)
     releases = db.query(Release).filter(
         Release.project_id == project_id,
         Release.id.in_([from_release_id, to_release_id]),

@@ -35,6 +35,40 @@ def get_current_user(
         raise credentials_exception
     return user
 
+def get_owned_project(db: Session, project_id: str, current_user: User):
+    from app.models.project import Project
+
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id,
+    ).first()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found or you do not have permission to access it.",
+        )
+    return project
+
+def get_owned_deployment(db: Session, deployment_id: str, current_user: User):
+    from app.models.deployment import Deployment
+    from app.models.project import Project
+
+    deployment = (
+        db.query(Deployment)
+        .join(Project, Project.id == Deployment.project_id)
+        .filter(
+            Deployment.id == deployment_id,
+            Project.owner_id == current_user.id,
+        )
+        .first()
+    )
+    if deployment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deployment not found or you do not have permission to access it.",
+        )
+    return deployment
+
 def require_roles(allowed_roles: List[str]):
     def role_checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role not in allowed_roles:

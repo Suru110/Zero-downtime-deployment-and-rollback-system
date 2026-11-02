@@ -1,8 +1,9 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, get_current_user, require_roles
+from app.api.deps import get_db, get_current_user, get_owned_deployment
 from app.models.deployment import Deployment
+from app.models.project import Project
 from app.models.rollback import RollbackEvent
 from app.models.user import User
 from app.schemas.rollback import RollbackTrigger, RollbackEventOut
@@ -17,9 +18,14 @@ def list_rollbacks(
     limit: int = 50,
     skip: int = 0,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    query = db.query(RollbackEvent)
+    query = (
+        db.query(RollbackEvent)
+        .join(Deployment, Deployment.id == RollbackEvent.source_deployment_id)
+        .join(Project, Project.id == Deployment.project_id)
+        .filter(Project.owner_id == current_user.id)
+    )
     if environment_id:
         query = query.filter(RollbackEvent.environment_id == environment_id)
     rollbacks = query.order_by(RollbackEvent.created_at.desc()).offset(skip).limit(limit).all()
@@ -32,11 +38,9 @@ def list_rollbacks(
 async def trigger_manual_rollback(
     payload: RollbackTrigger,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "operator"]))
+    current_user: User = Depends(get_current_user)
 ):
-    deployment = db.query(Deployment).filter(Deployment.id == payload.deployment_id).first()
-    if not deployment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    deployment = get_owned_deployment(db, payload.deployment_id, current_user)
     if deployment.status in {"rolling_back", "rolled_back"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A rollback is already in progress or completed")
 

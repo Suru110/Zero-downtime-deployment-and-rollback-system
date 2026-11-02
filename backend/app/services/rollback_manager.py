@@ -59,15 +59,6 @@ class RollbackManager:
                 restored_release = db.query(Release).filter(Release.id == prev_success_dep.release_id).first()
 
         if not restored_release:
-            # Fallback to the latest available release that is not the failed one
-            restored_release = (
-                db.query(Release)
-                .filter(Release.project_id == deployment.project_id, Release.id != deployment.release_id)
-                .order_by(Release.created_at.desc())
-                .first()
-            )
-
-        if not restored_release:
             raise ValueError("No previous release available for rollback")
 
         project = environment.project
@@ -99,7 +90,7 @@ class RollbackManager:
         adapter_result = await k8s_adapter.rollback(
             app_name=project.name,
             namespace=environment.k8s_namespace,
-            target_image=f"{project.image_repository}:{restored_release.image_tag}",
+            target_image=restored_release.image_reference or f"{project.image_repository}:{restored_release.image_tag}",
             replicas=environment.replicas
         )
 
@@ -109,7 +100,7 @@ class RollbackManager:
         deployment_logs.append({
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "level": "WARN",
-            "message": f"Rollback executed: Reverted to release {restored_release.version} ({restored_release.image_tag})"
+            "message": f"Rollback executed: Reverted to release {restored_release.version} ({restored_release.image_reference or restored_release.image_tag})"
         })
 
         rollback_verified = adapter_result.success
@@ -158,7 +149,7 @@ class RollbackManager:
                 "adapter": adapter_result.adapter_name,
                 "is_simulated": adapter_result.is_simulated,
                 "restored_version": restored_release.version,
-                "restored_image": restored_release.image_tag,
+                "restored_image": restored_release.image_reference or restored_release.image_tag,
                 "rollback_verified": rollback_verified,
                 "error": None if rollback_verified else adapter_result.message,
             }

@@ -28,6 +28,20 @@ class DeploymentEngine:
         })
 
     @classmethod
+    def _finalize_failed_deployment(
+        cls,
+        deployment: Deployment,
+        logs: List[Dict[str, Any]],
+        deployment_started: datetime,
+    ) -> None:
+        deployment.status = "failed"
+        deployment.finished_at = datetime.utcnow()
+        deployment.logs = logs
+        DEPLOYMENT_DURATION.labels(
+            deployment.strategy, deployment.status
+        ).observe((deployment.finished_at - deployment_started).total_seconds())
+
+    @classmethod
     async def execute_deployment(
         cls,
         db: Session,
@@ -63,7 +77,8 @@ class DeploymentEngine:
 
         logs: List[Dict[str, Any]] = list(deployment.logs or [])
         cls._append_log(logs, "INFO", f"Starting deployment pipeline for '{project.name}' -> environment '{environment.name}'")
-        cls._append_log(logs, "INFO", f"Target release: {release.version} (Image: {project.image_repository}:{release.image_tag})")
+        image_reference = release.image_reference or f"{project.image_repository}:{release.image_tag}"
+        cls._append_log(logs, "INFO", f"Target release: {release.version} (Image: {image_reference})")
         
         deployment.status = "scanning"
         deployment.progress = 15
@@ -73,7 +88,7 @@ class DeploymentEngine:
         # Phase 1: Security Scanning
         scanner = get_security_scanner_adapter()
         cls._append_log(logs, "INFO", f"Executing container image security scan via adapter '{scanner.adapter_name}'")
-        scan_report = await scanner.scan_image(f"{project.image_repository}:{release.image_tag}")
+        scan_report = await scanner.scan_image(image_reference)
         
         # Update release scan info
         release.scan_status = scan_report.get("status", "clean")
@@ -105,7 +120,7 @@ class DeploymentEngine:
         deploy_result = await k8s_adapter.deploy(
             app_name=project.name,
             namespace=environment.k8s_namespace,
-            image=f"{project.image_repository}:{release.image_tag}",
+            image=image_reference,
             replicas=environment.replicas,
             port=project.default_port,
             env_vars=environment.env_vars,
@@ -127,18 +142,19 @@ class DeploymentEngine:
             ):
                 cls._append_log(logs, "WARN", "Auto-rollback enabled. Triggering immediate rollback...")
                 db.commit()
-                await RollbackManager.trigger_rollback(
-                    db=db,
-                    deployment=deployment,
-                    reason=f"Deployment phase failure: {deploy_result.message}",
-                    is_automated=True
-                )
+                try:
+                    await RollbackManager.trigger_rollback(
+                        db=db,
+                        deployment=deployment,
+                        reason=f"Deployment phase failure: {deploy_result.message}",
+                        is_automated=True
+                    )
+                except ValueError as exc:
+                    cls._append_log(logs, "WARN", f"Automatic rollback was not run: {exc}")
+                    cls._finalize_failed_deployment(deployment, logs, deployment_started)
+                    db.commit()
             else:
-                deployment.status = "failed"
-                deployment.finished_at = datetime.utcnow()
-                DEPLOYMENT_DURATION.labels(
-                    deployment.strategy, deployment.status
-                ).observe((deployment.finished_at - deployment_started).total_seconds())
+                cls._finalize_failed_deployment(deployment, logs, deployment_started)
                 db.commit()
             return
 
@@ -172,12 +188,16 @@ class DeploymentEngine:
             if environment.auto_rollback_enabled and not (
                 settings.APP_ENV == "production" and deployment.is_simulated
             ):
-                await RollbackManager.trigger_rollback(
-                    db=db,
-                    deployment=deployment,
-                    reason="Deployment verification timed out",
-                    is_automated=True,
-                )
+                try:
+                    await RollbackManager.trigger_rollback(
+                        db=db,
+                        deployment=deployment,
+                        reason="Deployment verification timed out",
+                        is_automated=True,
+                    )
+                except ValueError as exc:
+                    cls._append_log(logs, "WARN", f"Automatic rollback was not run: {exc}")
+                    db.commit()
             return
 
         if not health_passed:
@@ -187,18 +207,19 @@ class DeploymentEngine:
             ):
                 cls._append_log(logs, "WARN", "Auto-rollback policy triggered by verification failure.")
                 db.commit()
-                await RollbackManager.trigger_rollback(
-                    db=db,
-                    deployment=deployment,
-                    reason="Synthetic health check or smoke test failed post-deployment",
-                    is_automated=True
-                )
+                try:
+                    await RollbackManager.trigger_rollback(
+                        db=db,
+                        deployment=deployment,
+                        reason="Synthetic health check or smoke test failed post-deployment",
+                        is_automated=True
+                    )
+                except ValueError as exc:
+                    cls._append_log(logs, "WARN", f"Automatic rollback was not run: {exc}")
+                    cls._finalize_failed_deployment(deployment, logs, deployment_started)
+                    db.commit()
             else:
-                deployment.status = "failed"
-                deployment.finished_at = datetime.utcnow()
-                DEPLOYMENT_DURATION.labels(
-                    deployment.strategy, deployment.status
-                ).observe((deployment.finished_at - deployment_started).total_seconds())
+                cls._finalize_failed_deployment(deployment, logs, deployment_started)
                 db.commit()
             return
 

@@ -7,6 +7,7 @@ class ReleaseCreate(BaseModel):
     git_commit: str = Field(..., min_length=7, max_length=40)
     git_branch: str = "main"
     image_tag: str = Field(..., min_length=1)
+    image_reference: Optional[str] = Field(default=None, min_length=3, max_length=255)
     image_digest: Optional[str] = Field(default=None, max_length=255)
     configuration_revision: Optional[str] = Field(default=None, max_length=255)
     commit_message: Optional[str] = None
@@ -20,7 +21,9 @@ class ReleaseOut(BaseModel):
     git_commit: str
     git_branch: str
     image_tag: str
+    image_reference: Optional[str] = None
     image_digest: Optional[str] = None
+    build_status: str
     configuration_revision: Optional[str] = None
     commit_message: Optional[str] = None
     changelog: Optional[str] = None
