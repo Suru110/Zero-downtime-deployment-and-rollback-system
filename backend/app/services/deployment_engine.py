@@ -140,13 +140,15 @@ class DeploymentEngine:
 
         cls._append_log(logs, "INFO", f"Dispatching deployment to orchestrator '{k8s_adapter.adapter_name}' (simulated={k8s_adapter.is_simulated})")
 
+        deployment_env = dict(environment.env_vars or {})
+        deployment_env.setdefault("HEALTH_PATH", project.health_path)
         deploy_result = await k8s_adapter.deploy(
             app_name=project.name,
             namespace=environment.k8s_namespace,
             image=image_reference,
             replicas=environment.replicas,
             port=project.default_port,
-            env_vars=environment.env_vars,
+            env_vars=deployment_env,
             strategy=deployment.strategy,
             canary_steps=environment.canary_steps,
             simulate_failure=simulate_failure
