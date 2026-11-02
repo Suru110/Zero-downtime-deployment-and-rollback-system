@@ -87,23 +87,33 @@ class HealthMonitorService:
                 smoke_details["error"] = "Simulated smoke test failure."
         else:
             url = environment.smoke_test_endpoint or project.health_path
-            if not url.startswith(("http://", "https://")):
-                port_suffix = f":{project.default_port}" if project.default_port and project.default_port != 80 else ""
-                url = f"http://{project.name}.{environment.k8s_namespace}.svc.cluster.local{port_suffix}{url}"
+            service_health_check = getattr(adapter, "check_service_health", None)
             for attempt in range(1, environment.verification_attempts + 1):
                 try:
-                    async with httpx.AsyncClient(timeout=environment.smoke_test_timeout_seconds) as client:
-                        response = await client.get(url)
-                    smoke_code = response.status_code
+                    if callable(service_health_check) and not url.startswith(("http://", "https://")):
+                        smoke_code = await service_health_check(
+                            project.name,
+                            environment.k8s_namespace,
+                            url,
+                        )
+                    else:
+                        if not url.startswith(("http://", "https://")):
+                            port_suffix = f":{project.default_port}" if project.default_port and project.default_port != 80 else ""
+                            url = f"http://{project.name}.{environment.k8s_namespace}.svc.cluster.local{port_suffix}{url}"
+                        async with httpx.AsyncClient(timeout=environment.smoke_test_timeout_seconds) as client:
+                            response = await client.get(url)
+                        smoke_code = response.status_code
                     smoke_details["attempt"] = attempt
-                    if response.status_code == environment.smoke_test_expected_status:
+                    if smoke_code == environment.smoke_test_expected_status:
                         smoke_status = "passed"
                         break
-                    smoke_details["error"] = f"Expected HTTP {environment.smoke_test_expected_status}; received HTTP {response.status_code}."
+                    smoke_details["error"] = f"Expected HTTP {environment.smoke_test_expected_status}; received HTTP {smoke_code}."
                 except httpx.TimeoutException:
                     smoke_details["error"] = "Smoke test timed out."
                 except httpx.HTTPError:
                     smoke_details["error"] = "Smoke test request failed."
+                except Exception as exc:
+                    smoke_details["error"] = f"Kubernetes service health check failed: {type(exc).__name__}."
                 if attempt < environment.verification_attempts:
                     await __import__("asyncio").sleep(min(1.0, environment.smoke_test_timeout_seconds / 2))
         cls._record(

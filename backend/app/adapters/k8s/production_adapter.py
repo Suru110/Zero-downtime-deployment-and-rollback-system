@@ -319,3 +319,20 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
             }
         except Exception as e:
             return {"error": "Kubernetes status query failed.", "error_type": type(e).__name__, "is_simulated": False, "status": "Error"}
+
+    async def check_service_health(self, service_name: str, namespace: str, path: str) -> int:
+        """Check a ClusterIP service through the Kubernetes API proxy.
+
+        This works when ReleasePilot runs outside the cluster, where the
+        service DNS name is not resolvable from the local machine.
+        """
+        if not self._core_client:
+            raise RuntimeError("Kubernetes cluster connection not available.")
+        proxy_path = path.lstrip("/")
+        await asyncio.to_thread(
+            self._core_client.connect_get_namespaced_service_proxy_with_path,
+            service_name,
+            namespace,
+            proxy_path,
+        )
+        return 200
