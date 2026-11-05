@@ -8,14 +8,34 @@ from app.models.deployment import Deployment
 from app.models.project import Project
 from app.models.environment import Environment
 from app.models.release import Release
+from app.models.rollback import RollbackEvent
 from app.models.user import User
 from app.schemas.deployment import DeploymentTrigger, DeploymentOut
 from app.schemas.common import ApiResponse
 from app.services.deployment_engine import DeploymentEngine
 from app.services.audit_service import AuditService
+from app.adapters import get_deployment_adapter
+from app.core.kubernetes import normalize_kubernetes_name
 from app.api.v1.releases import IMAGE_REFERENCE_PATTERN
 
 router = APIRouter(prefix="/deployments", tags=["Deployments"])
+
+TERMINAL_STATUSES = {"active", "rolled_back", "failed", "cancelled"}
+DELETABLE_STATUSES = TERMINAL_STATUSES | {"pending"}
+PAUSABLE_STATUSES = {"pending", "scanning", "deploying", "verifying"}
+
+def _clear_current_release_if_deleted(
+    db: Session,
+    environment_id: str,
+    release_id: str,
+) -> None:
+    db.query(Environment).filter(
+        Environment.id == environment_id,
+        Environment.current_release_id == release_id,
+    ).update(
+        {Environment.current_release_id: None},
+        synchronize_session=False,
+    )
 
 @router.get("", response_model=ApiResponse[List[DeploymentOut]])
 def list_deployments(
@@ -35,6 +55,39 @@ def list_deployments(
     return ApiResponse(
         success=True,
         data=[DeploymentOut.model_validate(d) for d in deployments]
+    )
+
+@router.delete("", response_model=ApiResponse[dict])
+def delete_all_deployments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    deployments = (
+        db.query(Deployment)
+        .join(Project)
+        .filter(Project.owner_id == current_user.id)
+        .all()
+    )
+    active = [deployment for deployment in deployments if deployment.status not in DELETABLE_STATUSES]
+    if active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stop or finish all in-progress deployments before deleting deployment history.",
+        )
+    deployment_ids = [deployment.id for deployment in deployments]
+    if deployment_ids:
+        db.query(RollbackEvent).filter(
+            RollbackEvent.source_deployment_id.in_(deployment_ids)
+        ).delete(synchronize_session=False)
+    for deployment in deployments:
+        if deployment.status == "active":
+            _clear_current_release_if_deleted(db, deployment.environment_id, deployment.release_id)
+        db.delete(deployment)
+    db.commit()
+    return ApiResponse(
+        success=True,
+        data={"deleted": len(deployments)},
+        message=f"Deleted {len(deployments)} deployment records.",
     )
 
 @router.post("", response_model=ApiResponse[DeploymentOut], status_code=status.HTTP_202_ACCEPTED)
@@ -93,6 +146,15 @@ async def trigger_deployment(
             detail="Another deployment or rollback is already in progress for this environment.",
         )
     if environment.current_release_id == release.id:
+        active_release_deployment = db.query(Deployment.id).filter(
+            Deployment.environment_id == environment.id,
+            Deployment.release_id == release.id,
+            Deployment.status == "active",
+        ).first()
+        if not active_release_deployment:
+            _clear_current_release_if_deleted(db, environment.id, release.id)
+            db.refresh(environment)
+    if environment.current_release_id == release.id and not payload.redeploy:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This release is already active in the target environment.",
@@ -117,6 +179,7 @@ async def trigger_deployment(
         logs=[],
         metadata_info={
             "triggered_by_username": current_user.username,
+            "redeploy": payload.redeploy,
             "dry_run": payload.dry_run,
             "simulate_failure": payload.simulate_failure
         }
@@ -137,6 +200,7 @@ async def trigger_deployment(
             "environment": environment.name,
             "release": release.version,
             "strategy": strategy,
+            "redeploy": payload.redeploy,
             "simulate_failure": payload.simulate_failure
         }
     )
@@ -192,6 +256,135 @@ def get_deployment(
 ):
     deployment = get_owned_deployment(db, deployment_id, current_user)
     return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment))
+
+@router.get("/{deployment_id}/endpoint", response_model=ApiResponse[DeploymentOut])
+async def get_deployment_endpoint(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    deployment = get_owned_deployment(db, deployment_id, current_user)
+    project = db.query(Project).filter(Project.id == deployment.project_id).first()
+    environment = db.query(Environment).filter(Environment.id == deployment.environment_id).first()
+    if not project or not environment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment target not found.")
+
+    adapter = get_deployment_adapter()
+    endpoint = {
+        "status": "unavailable",
+        "error": "The configured adapter does not expose a reachable endpoint.",
+    }
+    discover_endpoint = getattr(adapter, "discover_service_endpoint", None)
+    if callable(discover_endpoint):
+        endpoint = await discover_endpoint(
+            app_name=normalize_kubernetes_name(project.name),
+            namespace=normalize_kubernetes_name(environment.k8s_namespace),
+            port=project.default_port,
+            health_path=project.health_path,
+        )
+
+    metadata = dict(deployment.metadata_info or {})
+    metadata["endpoint_status"] = endpoint.get("status", "unavailable")
+    if endpoint.get("public_url"):
+        metadata["public_url"] = endpoint["public_url"]
+        metadata.pop("endpoint_error", None)
+    else:
+        metadata.pop("public_url", None)
+        metadata["endpoint_error"] = endpoint.get(
+            "error", "No reachable endpoint has been assigned yet."
+        )
+    metadata["endpoint_details"] = {
+        key: value for key, value in endpoint.items() if key != "public_url"
+    }
+    deployment.metadata_info = metadata
+    db.commit()
+    db.refresh(deployment)
+    return ApiResponse(
+        success=True,
+        data=DeploymentOut.model_validate(deployment),
+        message=(
+            "Application endpoint is ready."
+            if endpoint.get("public_url")
+            else "Application endpoint is not ready yet."
+        ),
+    )
+
+@router.delete("/{deployment_id}", response_model=ApiResponse[bool])
+def delete_deployment(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    deployment = get_owned_deployment(db, deployment_id, current_user)
+    if deployment.status not in DELETABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only pending or completed deployments can be deleted.",
+        )
+    db.query(RollbackEvent).filter(
+        RollbackEvent.source_deployment_id == deployment.id
+    ).delete(synchronize_session=False)
+    if deployment.status == "active":
+        _clear_current_release_if_deleted(db, deployment.environment_id, deployment.release_id)
+    db.delete(deployment)
+    db.commit()
+    return ApiResponse(success=True, data=True, message="Deployment record deleted.")
+
+@router.post("/{deployment_id}/pause", response_model=ApiResponse[DeploymentOut])
+def pause_deployment(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    deployment = get_owned_deployment(db, deployment_id, current_user)
+    if deployment.status not in PAUSABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only in-progress deployments can be paused.",
+        )
+    metadata = dict(deployment.metadata_info or {})
+    if metadata.get("paused"):
+        return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment), message="Deployment is already paused.")
+    metadata["paused"] = True
+    deployment.metadata_info = metadata
+    logs = list(deployment.logs or [])
+    logs.append({
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "level": "WARN",
+        "message": "Deployment paused by user. Resume it to continue the pipeline.",
+    })
+    deployment.logs = logs
+    db.commit()
+    db.refresh(deployment)
+    return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment), message="Deployment paused.")
+
+@router.post("/{deployment_id}/resume", response_model=ApiResponse[DeploymentOut])
+def resume_deployment(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    deployment = get_owned_deployment(db, deployment_id, current_user)
+    if deployment.status not in PAUSABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only in-progress deployments can be resumed.",
+        )
+    metadata = dict(deployment.metadata_info or {})
+    if not metadata.get("paused"):
+        return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment), message="Deployment is not paused.")
+    metadata["paused"] = False
+    deployment.metadata_info = metadata
+    logs = list(deployment.logs or [])
+    logs.append({
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "level": "INFO",
+        "message": "Deployment resumed by user.",
+    })
+    deployment.logs = logs
+    db.commit()
+    db.refresh(deployment)
+    return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment), message="Deployment resumed.")
 
 @router.get("/{deployment_id}/logs", response_model=ApiResponse[List[dict]])
 def get_deployment_logs(

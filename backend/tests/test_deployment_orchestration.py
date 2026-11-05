@@ -55,6 +55,72 @@ async def test_successful_deployment_pipeline(client, db_session, admin_token_he
     env = db_session.query(Environment).filter(Environment.id == env_id).first()
     assert env.current_release_id == rel_id
 
+    delete_resp = client.delete(f"/api/v1/deployments/{dep_id}", headers=admin_token_headers)
+    assert delete_resp.status_code == 200
+    assert db_session.query(Deployment).filter(Deployment.id == dep_id).first() is None
+    db_session.refresh(env)
+    assert env.current_release_id is None
+
+    redeploy_resp = client.post("/api/v1/deployments", json={
+        "project_id": proj_id,
+        "environment_id": env_id,
+        "release_id": rel_id,
+        "simulate_failure": False
+    }, headers=admin_token_headers)
+    assert redeploy_resp.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_active_release_can_be_explicitly_redeployed(
+    client, db_session, admin_token_headers
+):
+    project_response = client.post("/api/v1/projects", json={
+        "name": "active-release-service",
+        "git_repo": "https://github.com/org/active-release-service.git",
+        "image_repository": "docker.io/releasepilot/active-release-service",
+        "default_port": 8080,
+        "health_path": "/healthz"
+    }, headers=admin_token_headers)
+    project_id = project_response.json()["data"]["id"]
+
+    environment_response = client.post(f"/api/v1/projects/{project_id}/environments", json={
+        "name": "staging",
+        "k8s_namespace": "active-release-staging",
+    }, headers=admin_token_headers)
+    environment_id = environment_response.json()["data"]["id"]
+
+    release_response = client.post(f"/api/v1/projects/{project_id}/releases", json={
+        "version": "v1.0.0",
+        "git_commit": "1234567890abcdef1234567890abcdef12345678",
+        "image_tag": "v1.0.0"
+    }, headers=admin_token_headers)
+    release_id = release_response.json()["data"]["id"]
+
+    first_response = client.post("/api/v1/deployments", json={
+        "project_id": project_id,
+        "environment_id": environment_id,
+        "release_id": release_id,
+    }, headers=admin_token_headers)
+    first_id = first_response.json()["data"]["id"]
+    await DeploymentEngine.execute_deployment(
+        db=db_session, deployment_id=first_id, simulate_failure=False
+    )
+
+    blocked_response = client.post("/api/v1/deployments", json={
+        "project_id": project_id,
+        "environment_id": environment_id,
+        "release_id": release_id,
+    }, headers=admin_token_headers)
+    assert blocked_response.status_code == 409
+
+    redeploy_response = client.post("/api/v1/deployments", json={
+        "project_id": project_id,
+        "environment_id": environment_id,
+        "release_id": release_id,
+        "redeploy": True,
+    }, headers=admin_token_headers)
+    assert redeploy_response.status_code == 202
+
 @pytest.mark.asyncio
 async def test_first_failed_deployment_is_terminal_and_does_not_block_retry(
     client, db_session, admin_token_headers

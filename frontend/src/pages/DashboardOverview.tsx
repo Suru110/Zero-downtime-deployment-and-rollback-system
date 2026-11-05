@@ -5,7 +5,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { CardSkeleton } from '../components/Skeleton';
 import {
   Rocket, RotateCcw, Activity, Clock, CheckCircle2, TrendingUp,
-  ArrowRight, RefreshCw, Server, Layers, GitBranch
+  ArrowRight, RefreshCw, Server, Layers, GitBranch, AlertTriangle
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -17,15 +17,24 @@ interface DashboardOverviewProps {
   onSelectDeployment: (id: string) => void;
 }
 
-const FAKE_TREND_DATA = [
-  { day: 'Mon', deployments: 4, successful: 4, failed: 0 },
-  { day: 'Tue', deployments: 7, successful: 6, failed: 1 },
-  { day: 'Wed', deployments: 5, successful: 5, failed: 0 },
-  { day: 'Thu', deployments: 9, successful: 8, failed: 1 },
-  { day: 'Fri', deployments: 12, successful: 11, failed: 1 },
-  { day: 'Sat', deployments: 6, successful: 6, failed: 0 },
-  { day: 'Sun', deployments: 8, successful: 7, failed: 1 },
-];
+interface TrendPoint {
+  day: string;
+  deployments: number;
+  successful: number;
+  failed: number;
+}
+
+interface PlatformHealth {
+  simulation_active: boolean;
+  adapter_mode: string;
+  simulation_warning: string | null;
+  kubernetes: {
+    connected: boolean;
+    mode: string;
+    reason?: string;
+    server_version?: string;
+  };
+}
 
 const STATUS_COLORS: Record<string, string> = {
   active: '#10b981',
@@ -124,6 +133,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [trendData, setTrendData] = useState<TrendPoint[]>([]);
+  const [platformHealth, setPlatformHealth] = useState<PlatformHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -131,14 +142,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const fetchData = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
     try {
-      const [statsRes, projRes, depRes] = await Promise.all([
+      const [statsRes, projRes, depRes, trendRes, healthRes] = await Promise.all([
         api.get('/metrics/system-stats'),
         api.get('/projects'),
         api.get('/deployments?limit=8'),
+        api.get('/metrics/deployment-trend').catch(() => ({ data: { data: [] } })),
+        api.get('/platform/health').catch(() => ({ data: { data: null } })),
       ]);
       setStats(statsRes.data.data);
       setProjects(projRes.data.data);
       setDeployments(depRes.data.data);
+      setTrendData(trendRes.data.data || []);
+      setPlatformHealth(healthRes.data.data || null);
       setLastUpdated(new Date());
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
@@ -159,6 +174,22 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Simulation Mode Warning Banner */}
+      {platformHealth?.simulation_active && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-300 text-sm">
+          <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0 text-amber-400" />
+          <div>
+            <span className="font-bold text-amber-300">Simulation Mode Active — </span>
+            <span className="text-amber-200/80">
+              {platformHealth.simulation_warning || 'All adapters are simulated. No real Kubernetes operations are performed.'}
+            </span>
+            {!platformHealth.kubernetes.connected && platformHealth.kubernetes.reason && (
+              <p className="mt-1 text-xs text-amber-200/60">{platformHealth.kubernetes.reason}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Hero Banner */}
       <div className="relative overflow-hidden rounded-2xl border border-emerald-500/20 shadow-2xl">
         <div className="absolute inset-0 bg-gradient-to-r from-[#021a0f] via-[#0a1628] to-[#0a1628]" />
@@ -231,36 +262,36 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         {loading
           ? Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)
           : KPI_CONFIGS.map((cfg) => {
-              const Icon = cfg.icon;
-              const SubIcon = cfg.subIcon;
-              const value = stats ? (stats as any)[cfg.key] : null;
-              const colorText = COLOR_MAP[cfg.color];
-              const iconBg = ICON_BG_MAP[cfg.color];
+            const Icon = cfg.icon;
+            const SubIcon = cfg.subIcon;
+            const value = stats ? (stats as any)[cfg.key] : null;
+            const colorText = COLOR_MAP[cfg.color];
+            const iconBg = ICON_BG_MAP[cfg.color];
 
-              return (
-                <div key={cfg.key} className="p-5 rounded-2xl glass-card space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                      {cfg.label}
-                    </span>
-                    <div className={`w-8 h-8 rounded-lg border flex items-center justify-center ${iconBg}`}>
-                      <Icon className={`w-4 h-4 ${colorText}`} />
-                    </div>
+            return (
+              <div key={cfg.key} className="p-5 rounded-2xl glass-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                    {cfg.label}
+                  </span>
+                  <div className={`w-8 h-8 rounded-lg border flex items-center justify-center ${iconBg}`}>
+                    <Icon className={`w-4 h-4 ${colorText}`} />
                   </div>
-
-                  <div className={`text-3xl font-extrabold ${colorText}`}>
-                    {value !== null ? `${value}${cfg.suffix || ''}` : '--'}
-                  </div>
-
-                  {stats && (
-                    <div className={`flex items-center gap-1 text-xs ${colorText} opacity-80`}>
-                      <SubIcon className="w-3 h-3" />
-                      <span>{cfg.sub(stats)}</span>
-                    </div>
-                  )}
                 </div>
-              );
-            })}
+
+                <div className={`text-3xl font-extrabold ${colorText}`}>
+                  {value !== null ? `${value}${cfg.suffix || ''}` : '--'}
+                </div>
+
+                {stats && (
+                  <div className={`flex items-center gap-1 text-xs ${colorText} opacity-80`}>
+                    <SubIcon className="w-3 h-3" />
+                    <span>{cfg.sub(stats)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
       </div>
 
       {/* Charts + Recent Deployments */}
@@ -270,7 +301,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-bold text-white">Deployment Activity</h2>
-              <p className="text-xs text-slate-400 mt-0.5">7-day rolling view</p>
+              <p className="text-xs text-slate-400 mt-0.5">7-day rolling view – real data</p>
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1.5">
@@ -284,7 +315,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           <div className="h-44">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={FAKE_TREND_DATA} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+              <AreaChart data={trendData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                 <defs>
                   <linearGradient id="gradSuccess" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
@@ -380,19 +411,19 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           {loading
             ? Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="p-4 rounded-xl glass-card space-y-2 animate-pulse">
-                  <div className="skeleton h-3 w-32" />
-                  <div className="skeleton h-2.5 w-48" />
-                </div>
-              ))
+              <div key={i} className="p-4 rounded-xl glass-card space-y-2 animate-pulse">
+                <div className="skeleton h-3 w-32" />
+                <div className="skeleton h-2.5 w-48" />
+              </div>
+            ))
             : projects.length === 0
-            ? (
+              ? (
                 <div className="p-8 text-center glass-card rounded-2xl text-slate-500 text-sm">
                   <Layers className="w-8 h-8 mx-auto mb-2 opacity-30" />
                   No applications registered yet
                 </div>
               )
-            : projects.map((proj) => (
+              : projects.map((proj) => (
                 <div
                   key={proj.id}
                   className="p-4 rounded-xl glass-card glass-card-hover space-y-2.5 cursor-default"
@@ -443,22 +474,22 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           {loading
             ? Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="p-4 rounded-xl glass-card space-y-2 animate-pulse">
-                  <div className="flex items-center gap-3">
-                    <div className="skeleton h-6 w-24 rounded-full" />
-                    <div className="skeleton h-3 w-32" />
-                  </div>
-                  <div className="skeleton h-1.5 w-full rounded-full" />
+              <div key={i} className="p-4 rounded-xl glass-card space-y-2 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <div className="skeleton h-6 w-24 rounded-full" />
+                  <div className="skeleton h-3 w-32" />
                 </div>
-              ))
+                <div className="skeleton h-1.5 w-full rounded-full" />
+              </div>
+            ))
             : deployments.length === 0
-            ? (
+              ? (
                 <div className="p-10 text-center glass-card rounded-2xl text-slate-500 text-sm">
                   <Rocket className="w-8 h-8 mx-auto mb-2 opacity-30" />
                   No deployments recorded yet. Deploy your first application to get started.
                 </div>
               )
-            : deployments.map((dep) => {
+              : deployments.map((dep) => {
                 const project = projects.find((p) => p.id === dep.project_id);
                 const isActive = ['deploying', 'verifying', 'scanning'].includes(dep.status);
                 return (
@@ -504,12 +535,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     {/* Progress Bar */}
                     <div className="progress-bar">
                       <div
-                        className={`progress-bar-fill ${
-                          dep.status === 'failed' ? 'bg-rose-500' :
-                          dep.status === 'rolled_back' ? 'bg-purple-500' :
-                          dep.status === 'active' ? 'bg-emerald-500' :
-                          'bg-blue-500'
-                        }`}
+                        className={`progress-bar-fill ${dep.status === 'failed' ? 'bg-rose-500' :
+                            dep.status === 'rolled_back' ? 'bg-purple-500' :
+                              dep.status === 'active' ? 'bg-emerald-500' :
+                                'bg-blue-500'
+                          }`}
                         style={{ width: `${dep.progress}%` }}
                       />
                     </div>

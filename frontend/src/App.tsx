@@ -91,6 +91,7 @@ const AppContent: React.FC = () => {
           project={deployProject}
           environments={modalEnvs}
           releases={modalReleases}
+          onReleaseCreated={(release) => setModalReleases((current) => [release, ...current])}
           onDeploymentTriggered={() => {
             setCurrentTab('deployments');
           }}

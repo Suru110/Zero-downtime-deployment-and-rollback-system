@@ -1,18 +1,27 @@
 import os
+import sys
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Always import the application from this checkout, even when pytest is
+# launched from a parent directory or another installed package is present.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT))
+
 # Force SQLite in-memory for testing
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["ENABLE_MOCK_ADAPTERS"] = "true"
+os.environ["KUBERNETES_MODE"] = "mock"
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-1234567890"
 
 from app.core.database import Base
 from app.core.config import settings
 settings.DATABASE_URL = "sqlite:///:memory:"
+settings.KUBERNETES_MODE = "mock"
 import app.models  # ensure models are loaded
 from app.api.deps import get_db
 from app.main import app

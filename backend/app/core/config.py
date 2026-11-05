@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     KUBERNETES_IN_CLUSTER: bool = False
     KUBECONFIG_PATH: Optional[str] = None
     K8S_DEFAULT_NAMESPACE: str = "default"
+    K8S_PUBLIC_BASE_URL: Optional[str] = None
+    K8S_ENDPOINT_DISCOVERY_ATTEMPTS: int = 3
+    K8S_ENDPOINT_DISCOVERY_INTERVAL_SECONDS: float = 2.0
+    K8S_ENDPOINT_VERIFY_TIMEOUT_SECONDS: float = 5.0
+    K8S_MINIKUBE_PROFILE: Optional[str] = None
 
     # Argo CD
     ARGO_CD_SERVER: str = "http://localhost:8080"

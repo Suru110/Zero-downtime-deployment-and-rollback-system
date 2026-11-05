@@ -7,6 +7,7 @@ class DeploymentTrigger(BaseModel):
     environment_id: str
     release_id: str
     override_strategy: Optional[str] = None
+    redeploy: bool = False
     dry_run: bool = False
     simulate_failure: bool = False
     idempotency_key: Optional[str] = None

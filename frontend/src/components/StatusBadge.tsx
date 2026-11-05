@@ -2,6 +2,7 @@ import React from 'react';
 
 type StatusType =
   | 'pending' | 'scanning' | 'deploying' | 'verifying'
+  | 'paused'
   | 'active' | 'failed' | 'rolled_back' | 'cancelled'
   | 'passed' | 'warning' | 'clean' | 'critical' | 'unscanned';
 
@@ -13,6 +14,7 @@ interface StatusBadgeProps {
 
 const CONFIG: Record<string, { bg: string; text: string; border: string; dot: string; label: string }> = {
   pending:      { bg: 'bg-slate-800/80',    text: 'text-slate-300',   border: 'border-slate-700/60',  dot: 'bg-slate-400',   label: 'Pending' },
+  paused:       { bg: 'bg-amber-500/10',    text: 'text-amber-300',    border: 'border-amber-500/30',   dot: 'bg-amber-400',   label: 'Paused' },
   scanning:     { bg: 'bg-cyan-500/10',     text: 'text-cyan-400',    border: 'border-cyan-500/30',   dot: 'bg-cyan-400',    label: 'Scanning' },
   deploying:    { bg: 'bg-blue-500/10',     text: 'text-blue-400',    border: 'border-blue-500/30',   dot: 'bg-blue-400',    label: 'Deploying' },
   verifying:    { bg: 'bg-violet-500/10',   text: 'text-violet-400',  border: 'border-violet-500/30', dot: 'bg-violet-400',  label: 'Verifying' },

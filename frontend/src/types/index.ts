@@ -2,7 +2,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'operator' | 'developer' | 'viewer';
+  role: 'admin' | 'operator' | 'developer' | 'viewer' | 'user';
   is_active: boolean;
   created_at: string;
 }
@@ -49,7 +49,9 @@ export interface Release {
   git_commit: string;
   git_branch: string;
   image_tag: string;
+  image_reference?: string;
   commit_message?: string;
+  build_status: string;
   changelog?: string;
   scan_status: 'unscanned' | 'clean' | 'warning' | 'critical';
   scan_results: Record<string, any>;
@@ -74,7 +76,7 @@ export interface Deployment {
   is_simulated: boolean;
   adapter_name: string;
   logs: DeploymentLog[];
-  metadata_info: Record<string, any>;
+  metadata_info: Record<string, any> & { paused?: boolean };
   started_at: string;
   finished_at?: string;
   idempotency_key?: string;

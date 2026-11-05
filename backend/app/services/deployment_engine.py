@@ -12,6 +12,7 @@ from app.services.rollback_manager import RollbackManager
 from app.services.audit_service import AuditService
 from app.core.logging import get_logger
 from app.core.config import settings
+from app.core.kubernetes import normalize_kubernetes_name
 from app.core.metrics import (
     DEPLOYMENT_DURATION, ROLLOUT_FAILURES,
 )
@@ -40,6 +41,18 @@ class DeploymentEngine:
         DEPLOYMENT_DURATION.labels(
             deployment.strategy, deployment.status
         ).observe((deployment.finished_at - deployment_started).total_seconds())
+
+    @classmethod
+    async def _wait_if_paused(
+        cls,
+        db: Session,
+        deployment: Deployment,
+    ) -> List[Dict[str, Any]]:
+        while True:
+            db.refresh(deployment)
+            if not (deployment.metadata_info or {}).get("paused"):
+                return list(deployment.logs or [])
+            await asyncio.sleep(1)
 
     @classmethod
     async def execute_deployment(
@@ -74,8 +87,21 @@ class DeploymentEngine:
         environment = db.query(Environment).filter(Environment.id == deployment.environment_id).first()
         project = db.query(Project).filter(Project.id == deployment.project_id).first()
         release = db.query(Release).filter(Release.id == deployment.release_id).first()
+        original_namespace = environment.k8s_namespace
+        normalized_namespace = normalize_kubernetes_name(original_namespace)
+        namespace_was_normalized = normalized_namespace != original_namespace
+        if namespace_was_normalized:
+            environment.k8s_namespace = normalized_namespace
+            db.commit()
 
         logs: List[Dict[str, Any]] = list(deployment.logs or [])
+        if namespace_was_normalized:
+            cls._append_log(
+                logs,
+                "WARN",
+                f"Normalized environment namespace '{original_namespace}' to '{normalized_namespace}'.",
+            )
+        logs = await cls._wait_if_paused(db, deployment)
         cls._append_log(logs, "INFO", f"Starting deployment pipeline for '{project.name}' -> environment '{environment.name}'")
         image_reference = release.image_reference or f"{project.image_repository}:{release.image_tag}"
         cls._append_log(logs, "INFO", f"Target release: {release.version} (Image: {image_reference})")
@@ -109,6 +135,7 @@ class DeploymentEngine:
         db.commit()
 
         # Phase 1: Security Scanning
+        logs = await cls._wait_if_paused(db, deployment)
         scanner = get_security_scanner_adapter()
         cls._append_log(logs, "INFO", f"Executing container image security scan via adapter '{scanner.adapter_name}'")
         scan_report = await scanner.scan_image(image_reference)
@@ -129,6 +156,7 @@ class DeploymentEngine:
         cls._append_log(logs, "INFO", f"Security scan passed: {scan_report.get('critical_count', 0)} Critical, {scan_report.get('high_count', 0)} High CVEs.")
 
         # Phase 2: Deploying
+        logs = await cls._wait_if_paused(db, deployment)
         deployment.status = "deploying"
         deployment.progress = 40
         deployment.logs = logs
@@ -151,9 +179,18 @@ class DeploymentEngine:
             env_vars=deployment_env,
             strategy=deployment.strategy,
             canary_steps=environment.canary_steps,
-            simulate_failure=simulate_failure
+            simulate_failure=simulate_failure,
+            health_path=project.health_path,
         )
 
+        adapter_public_url = deploy_result.details.get("public_url")
+        deployment.metadata_info = {
+            **(deployment.metadata_info or {}),
+            **({"public_url": adapter_public_url} if adapter_public_url else {}),
+            "endpoint_status": deploy_result.details.get("endpoint_status", "unavailable"),
+            **({"endpoint_error": deploy_result.details["endpoint_error"]} if deploy_result.details.get("endpoint_error") else {}),
+            "adapter_details": deploy_result.details,
+        }
         logs.extend(deploy_result.logs)
         deployment.logs = logs
 
@@ -161,7 +198,11 @@ class DeploymentEngine:
             ROLLOUT_FAILURES.labels(
                 deploy_result.adapter_name, str(deploy_result.is_simulated).lower()
             ).inc()
-            cls._append_log(logs, "ERROR", f"Deployment execution failed: {deploy_result.message}")
+            error_detail = deploy_result.details.get("error") if deploy_result.details else None
+            failure_message = deploy_result.message
+            if error_detail:
+                failure_message = f"{failure_message} ({error_detail})"
+            cls._append_log(logs, "ERROR", f"Deployment execution failed: {failure_message}")
             if environment.auto_rollback_enabled and not (
                 settings.APP_ENV == "production" and deployment.is_simulated
             ):
@@ -171,7 +212,7 @@ class DeploymentEngine:
                     await RollbackManager.trigger_rollback(
                         db=db,
                         deployment=deployment,
-                        reason=f"Deployment phase failure: {deploy_result.message}",
+                        reason=f"Deployment phase failure: {failure_message}",
                         is_automated=True
                     )
                 except ValueError as exc:
@@ -184,6 +225,7 @@ class DeploymentEngine:
             return
 
         # Phase 3: Verifying (Synthetic Health Checks)
+        logs = await cls._wait_if_paused(db, deployment)
         deployment.status = "verifying"
         deployment.progress = 75
         deployment.logs = logs

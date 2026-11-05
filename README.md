@@ -36,6 +36,32 @@ Deployment flow:
    rollback.
 7. Expose deployment logs, health checks, rollback history, and audit events.
 
+Real Kubernetes deployments expose the application Service as a NodePort. After
+the rollout is ready, ReleasePilot discovers and verifies the endpoint before
+saving it in the deployment record. Minikube deployments use a service tunnel,
+the Minikube node IP, or an assigned external node address; LoadBalancer and
+Ingress endpoints are also supported. ClusterIP services are reported as
+pending because a ClusterIP is not externally reachable. The Deployments
+Console exposes verified endpoints with **Open Application** and **Copy URL**
+actions, and retries endpoint discovery through
+`GET /api/v1/deployments/{deployment_id}/endpoint`.
+
+Deployment history can be deleted individually from the Deployments Console or
+in bulk with **Delete All**. Active pipeline phases cannot be deleted; finish
+or fail them first so active orchestration is never silently abandoned.
+
+Pending deployments can be deleted individually. Deployments in the scanning,
+deploying, or verification phases can be paused and resumed from the console;
+the pipeline waits at its next phase boundary while paused.
+
+Completed, failed, rolled-back, and cancelled deployments can be started again
+with **Redeploy**, including when the selected release is currently active in
+the target environment. Redeploy explicitly reuses the same project,
+environment, release, and strategy. Applications can be removed from the
+Applications Registry with
+**Delete**; this removes their environments, releases, deployments, and
+associated rollback events.
+
 The database stores users, projects, environments, releases, deployments,
 health checks, rollback events, and audit logs. Alembic migrations are the
 authoritative schema changes; automatic table creation is only a local safety
@@ -131,7 +157,10 @@ Copy [.env.example](.env.example) to `.env`. Important settings include:
 
 - `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`.
 - `JWT_SECRET_KEY`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `CORS_ORIGINS`.
-- `ENABLE_MOCK_ADAPTERS`, `KUBERNETES_IN_CLUSTER`, `KUBECONFIG_PATH`.
+- `ENABLE_MOCK_ADAPTERS`, `KUBERNETES_IN_CLUSTER`, `KUBECONFIG_PATH`,
+  `K8S_PUBLIC_BASE_URL`, and the `K8S_ENDPOINT_*` discovery settings control
+  live Kubernetes endpoint discovery. Mock deployments intentionally do not
+  publish a fake URL.
 - `TRIVY_SERVER_URL`, `TRIVY_SEVERITY_THRESHOLD`.
 - `PROMETHEUS_URL`, `GRAFANA_URL`.
 

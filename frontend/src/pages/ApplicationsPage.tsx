@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import api from '../api/client';
 import { Project, Environment, Release } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
-import { Layers, Plus, GitBranch, ShieldAlert, Rocket, Server, Check, X, ShieldCheck } from 'lucide-react';
+import { Layers, Plus, GitBranch, ShieldAlert, Rocket, Server, Check, X, ShieldCheck, Trash2 } from 'lucide-react';
 import { ScanReportModal } from '../components/ScanReportModal';
 
 interface ApplicationsPageProps {
@@ -18,15 +18,17 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
 
   // Modals state
   const [showCreateApp, setShowCreateApp] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [showCreateRelease, setShowCreateRelease] = useState(false);
   const [selectedScanRelease, setSelectedScanRelease] = useState<Release | null>(null);
+  const [namespaceEdits, setNamespaceEdits] = useState<Record<string, string>>({});
 
   // New App Form State
   const [newAppName, setNewAppName] = useState('');
   const [newAppDesc, setNewAppDesc] = useState('');
   const [newAppGit, setNewAppGit] = useState('');
   const [newAppImage, setNewAppImage] = useState('');
-  const [newAppPort, setNewAppPort] = useState(8080);
+  const [newAppPort, setNewAppPort] = useState(3000);
   const [newAppHealth, setNewAppHealth] = useState('/healthz');
 
   // New Release Form State
@@ -74,6 +76,21 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      if (editingProjectId) {
+        const res = await api.put(`/projects/${editingProjectId}`, {
+          description: newAppDesc,
+          git_repo: newAppGit,
+          image_repository: newAppImage,
+          default_port: Number(newAppPort),
+          health_path: newAppHealth
+        });
+        const updated = res.data.data as Project;
+        setProjects((current) => current.map((project) => project.id === updated.id ? updated : project));
+        setSelectedProject(updated);
+        setEditingProjectId(null);
+        setShowCreateApp(false);
+        return;
+      }
       const res = await api.post('/projects', {
         name: newAppName,
         description: newAppDesc,
@@ -138,6 +155,35 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
     }
   };
 
+  const deleteApplication = async () => {
+    if (!selectedProject) return;
+    if (!window.confirm(`Delete application "${selectedProject.name}" and all its environments, releases, and deployment history? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/projects/${selectedProject.id}`);
+      const remaining = projects.filter((project) => project.id !== selectedProject.id);
+      setProjects(remaining);
+      setSelectedProject(remaining[0] || null);
+      setEnvironments([]);
+      setReleases([]);
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || 'Unable to delete application.');
+    }
+  };
+
+  const updateNamespace = async (environment: Environment) => {
+    const namespace = namespaceEdits[environment.id]?.trim();
+    if (!namespace || namespace === environment.k8s_namespace) return;
+    try {
+      const response = await api.put(`/projects/${selectedProject?.id}/environments/${environment.id}`, {
+        k8s_namespace: namespace,
+      });
+      setEnvironments((current) => current.map((item) => item.id === environment.id ? response.data.data : item));
+      setNamespaceEdits((current) => ({ ...current, [environment.id]: '' }));
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || 'Unable to update Kubernetes namespace.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -149,7 +195,16 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
           </p>
         </div>
         <button
-          onClick={() => setShowCreateApp(true)}
+          onClick={() => {
+            setEditingProjectId(null);
+            setNewAppName('');
+            setNewAppDesc('');
+            setNewAppGit('');
+            setNewAppImage('');
+            setNewAppPort(3000);
+            setNewAppHealth('/healthz');
+            setShowCreateApp(true);
+          }}
           className="px-4 py-2.5 rounded-xl text-sm font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center gap-2 self-start sm:self-auto shadow-lg shadow-emerald-500/20 transition-all"
         >
           <Plus className="w-4 h-4" />
@@ -188,6 +243,27 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
                   <Rocket className="w-3.5 h-3.5" />
                   <span>Deploy</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setEditingProjectId(selectedProject.id);
+                    setNewAppDesc(selectedProject.description || '');
+                    setNewAppGit(selectedProject.git_repo);
+                    setNewAppImage(selectedProject.image_repository);
+                    setNewAppPort(selectedProject.default_port);
+                    setNewAppHealth(selectedProject.health_path);
+                    setShowCreateApp(true);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => void deleteApplication()}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
               </div>
               <p className="text-xs text-slate-400">{selectedProject.description || 'No description provided.'}</p>
 
@@ -221,7 +297,23 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
                   <div key={env.id} className="p-3.5 bg-slate-950/80 border border-slate-800/80 rounded-xl space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-xs uppercase text-emerald-400 tracking-wider">{env.name}</span>
-                      <span className="text-[11px] font-mono text-slate-400">ns: {env.k8s_namespace}</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          aria-label={`${env.name} Kubernetes namespace`}
+                          value={namespaceEdits[env.id] ?? env.k8s_namespace}
+                          onChange={(event) => setNamespaceEdits((current) => ({
+                            ...current,
+                            [env.id]: event.target.value,
+                          }))}
+                          className="w-36 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-300"
+                        />
+                        <button
+                          onClick={() => void updateNamespace(env)}
+                          className="text-[11px] text-emerald-400 hover:text-emerald-300"
+                        >
+                          Save
+                        </button>
+                      </div>
                     </div>
                     <div className="flex items-center justify-between text-xs text-slate-400">
                       <span>Replicas: <strong className="text-white">{env.replicas}</strong></span>
@@ -267,6 +359,9 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
                           <div className="text-xs text-slate-300 font-mono">
                             {rel.image_tag} • git:{rel.git_commit.substring(0, 7)}
                           </div>
+                          <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                            {rel.image_reference || `${selectedProject.image_repository}:${rel.image_tag}`}
+                          </div>
                           {rel.commit_message && (
                             <div className="text-xs text-slate-400 mt-0.5">{rel.commit_message}</div>
                           )}
@@ -303,7 +398,9 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
             <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="font-bold text-lg text-white">Register New Application</h3>
+              <h3 className="font-bold text-lg text-white">
+                {editingProjectId ? 'Edit Application Configuration' : 'Register New Application'}
+              </h3>
               <button onClick={() => setShowCreateApp(false)} className="p-1 rounded-lg text-slate-400 hover:text-white">
                 <X className="w-5 h-5" />
               </button>
@@ -316,6 +413,7 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
                   required
                   placeholder="e.g. inventory-service"
                   value={newAppName}
+                  disabled={!!editingProjectId}
                   onChange={(e) => setNewAppName(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                 />
@@ -377,7 +475,7 @@ export const ApplicationsPage: React.FC<ApplicationsPageProps> = ({ onOpenDeploy
                   Cancel
                 </button>
                 <button type="submit" className="px-5 py-2 rounded-xl text-sm font-bold bg-emerald-500 text-slate-950 hover:bg-emerald-400">
-                  Save Application
+                {editingProjectId ? 'Save Configuration' : 'Save Application'}
                 </button>
               </div>
             </form>

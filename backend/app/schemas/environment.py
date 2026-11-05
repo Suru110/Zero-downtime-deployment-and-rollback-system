@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, Dict, List
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+from app.core.kubernetes import normalize_kubernetes_name
 
 class EnvironmentBase(BaseModel):
     name: str = Field(..., min_length=2, max_length=50)
@@ -17,10 +18,16 @@ class EnvironmentBase(BaseModel):
     smoke_test_timeout_seconds: int = Field(default=5, ge=1, le=60)
     env_vars: Dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("k8s_namespace", mode="before")
+    @classmethod
+    def normalize_namespace(cls, value: str) -> str:
+        return normalize_kubernetes_name(value)
+
 class EnvironmentCreate(EnvironmentBase):
     pass
 
 class EnvironmentUpdate(BaseModel):
+    k8s_namespace: Optional[str] = None
     replicas: Optional[int] = None
     deployment_strategy: Optional[str] = None
     canary_steps: Optional[List[int]] = None
@@ -31,6 +38,11 @@ class EnvironmentUpdate(BaseModel):
     smoke_test_expected_status: Optional[int] = Field(default=None, ge=100, le=599)
     smoke_test_timeout_seconds: Optional[int] = Field(default=None, ge=1, le=60)
     env_vars: Optional[Dict[str, str]] = None
+
+    @field_validator("k8s_namespace", mode="before")
+    @classmethod
+    def normalize_namespace(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_kubernetes_name(value) if value is not None else None
 
 class EnvironmentOut(EnvironmentBase):
     model_config = ConfigDict(from_attributes=True)

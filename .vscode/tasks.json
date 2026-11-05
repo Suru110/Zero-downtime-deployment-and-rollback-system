@@ -1,0 +1,188 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Verify Minikube deployment prerequisites",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Continue'; Write-Host '--- docker ---'; docker version; Write-Host '--- minikube ---'; minikube status --profile minikube; Write-Host '--- kubectl contexts ---'; kubectl config get-contexts; Write-Host '--- kubectl nodes ---'; kubectl get nodes --context minikube"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Deploy registration-login to Minikube",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; docker pull docker.io/surabhi1106/registration-login:v1.0.0; kubectl config use-context minikube; kubectl apply -f Registration-login\\k8s\\registration-login.yaml; kubectl rollout status deployment/registration-login -n registration-login-staging --timeout=180s; $pod=kubectl get pods -n registration-login-staging -l app=registration-login -o jsonpath='{.items[0].metadata.name}'; kubectl get pods -n registration-login-staging -o wide; kubectl exec -n registration-login-staging $pod -- node -e \"const http=require('http'); http.get('http://127.0.0.1:3000/healthz',r=>{console.log('healthz='+r.statusCode); process.exit(r.statusCode===200?0:1)}).on('error',e=>{console.error(e.message);process.exit(1)})\"; kubectl exec -n registration-login-staging $pod -- node -e \"const http=require('http'); http.get('http://127.0.0.1:3000/readyz',r=>{console.log('readyz='+r.statusCode); process.exit(r.statusCode===200?0:1)}).on('error',e=>{console.error(e.message);process.exit(1)})\""
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run real Minikube deployment",
+			"type": "shell",
+			"command": ".\\scripts\\deploy-registration-login.ps1",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Minikube profile",
+			"type": "shell",
+			"command": "minikube",
+			"args": [
+				"start",
+				"--profile",
+				"minikube"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Docker Desktop",
+			"type": "shell",
+			"command": "$dockerDesktop='C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe'; if (Test-Path $dockerDesktop) { Start-Process -FilePath $dockerDesktop; Start-Sleep -Seconds 20; docker version } else { throw 'Docker Desktop executable was not found.' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify deployed registration login",
+			"type": "shell",
+			"command": ".\\scripts\\verify-registration-login.ps1",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify deployed Kubernetes resources",
+			"type": "shell",
+			"command": "kubectl",
+			"args": [
+				"get",
+				"all,pvc",
+				"-n",
+				"registration-login-staging",
+				"-o",
+				"wide"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Minikube application status",
+			"type": "shell",
+			"command": "kubectl",
+			"args": [
+				"get",
+				"deployment,service,pods,pvc",
+				"-n",
+				"registration-login-staging",
+				"-o",
+				"wide"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Expose deployed application URL",
+			"type": "shell",
+			"command": "kubectl",
+			"args": [
+				"apply",
+				"-f",
+				"Registration-login\\k8s\\registration-login.yaml"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Get deployed application URL",
+			"type": "shell",
+			"command": "minikube",
+			"args": [
+				"service",
+				"registration-login",
+				"-n",
+				"registration-login-staging",
+				"--url"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check NodePort service URL",
+			"type": "shell",
+			"command": "kubectl",
+			"args": [
+				"get",
+				"service",
+				"registration-login",
+				"-n",
+				"registration-login-staging",
+				"-o",
+				"jsonpath={.spec.type}{\" \"}{.spec.ports[0].nodePort}{\"\\n\"}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build ReleasePilot frontend",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build ReleasePilot frontend from folder",
+			"type": "shell",
+			"command": "Set-Location frontend; npm run build",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect public service endpoint",
+			"type": "shell",
+			"command": "kubectl get service registration-login -n registration-login-staging -o wide",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Get Minikube public endpoint",
+			"type": "shell",
+			"command": "minikube ip --profile minikube; Write-Output 'http://<minikube-ip>:31544'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify public application endpoint",
+			"type": "shell",
+			"command": "curl.exe",
+			"args": [
+				"-fsS",
+				"http://192.168.49.2:31544/healthz"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify Minikube tunnel endpoint",
+			"type": "shell",
+			"command": "curl.exe",
+			"args": [
+				"-fsS",
+				"http://127.0.0.1:58718/healthz"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

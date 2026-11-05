@@ -1,0 +1,122 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: registration-login-staging
+  labels:
+    app.kubernetes.io/name: registration-login
+    app.kubernetes.io/managed-by: releasepilot
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registration-login-data
+  namespace: registration-login-staging
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registration-login
+  namespace: registration-login-staging
+  labels:
+    app: registration-login
+    app.kubernetes.io/name: registration-login
+    app.kubernetes.io/managed-by: releasepilot
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: registration-login
+  template:
+    metadata:
+      labels:
+        app: registration-login
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: registration-login
+          image: docker.io/surabhi1106/registration-login:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            - name: DB_DIR
+              value: "/app/data"
+            - name: DB_PATH
+              value: "/app/data/users.db"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: registration-login-secret
+                  key: session-secret
+                  optional: true
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registration-login-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registration-login
+  namespace: registration-login-staging
+  labels:
+    app: registration-login
+    app.kubernetes.io/name: registration-login
+spec:
+  type: ClusterIP
+  selector:
+    app: registration-login
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+

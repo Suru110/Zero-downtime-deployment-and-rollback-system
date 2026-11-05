@@ -29,7 +29,8 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
         env_vars: Dict[str, str],
         strategy: str,
         canary_steps: Optional[List[int]] = None,
-        simulate_failure: bool = False
+        simulate_failure: bool = False,
+        health_path: str = "/healthz",
     ) -> AdapterResult:
         logs: List[Dict[str, Any]] = []
         self._log(logs, "INFO", f"[SIMULATION] Connecting to simulated cluster namespace: '{namespace}'")
@@ -76,13 +77,25 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
             self._log(logs, "INFO", f"[SIMULATION] Readiness probe passed on {replicas} updated pod(s). Terminating old replica set.")
             await asyncio.sleep(0.2)
 
+        # Build a deterministic simulated public URL from the app name and port.
+        # This mirrors what a real NodePort service would expose via minikube.
+        simulated_url = f"http://127.0.0.1:{port}"
         self._log(logs, "INFO", f"[SIMULATION] Deployment completed successfully with zero downtime.")
+        self._log(logs, "INFO", f"[SIMULATION] Application endpoint available at {simulated_url}")
         return AdapterResult(
             success=True,
             is_simulated=True,
             adapter_name=self.adapter_name,
             message="Simulated zero-downtime deployment finished cleanly.",
-            details={"strategy": strategy, "active_replicas": replicas, "image": image},
+            details={
+                "strategy": strategy,
+                "active_replicas": replicas,
+                "image": image,
+                "public_url": simulated_url,
+                "endpoint_status": "ready",
+                "service_type": "NodePort",
+                "service_port": port,
+            },
             logs=logs
         )
 
@@ -120,4 +133,20 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
             "desired_replicas": 3,
             "status": "Running",
             "restarts": 0
+        }
+
+    async def discover_service_endpoint(
+        self,
+        app_name: str,
+        namespace: str,
+        port: int,
+        health_path: str = "/healthz",
+        service: Any = None,
+    ) -> Dict[str, Any]:
+        """Return a deterministic simulated endpoint so the UI always has a URL."""
+        simulated_url = f"http://127.0.0.1:{port}"
+        return {
+            "status": "ready",
+            "public_url": simulated_url,
+            "service_type": "NodePort",
         }

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import api from '../api/client';
 import { Deployment, Project, Environment, Release, HealthCheck } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
-import { GitBranch, RotateCcw, Terminal, Activity, CheckCircle2, AlertTriangle, Cpu, Layers } from 'lucide-react';
+import { GitBranch, RotateCcw, Terminal, Activity, CheckCircle2, AlertTriangle, Cpu, Layers, Trash2, ExternalLink, Pause, Play, Rocket, Clipboard, Loader2 } from 'lucide-react';
 import { RollbackModal } from '../components/RollbackModal';
 
 interface DeploymentsPageProps {
@@ -19,6 +19,7 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
   const [filter, setFilter] = useState<string>('all');
   const [showRollbackModal, setShowRollbackModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [endpointLoading, setEndpointLoading] = useState(false);
 
   const loadAll = async () => {
     try {
@@ -50,22 +51,89 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
         api.get(`/deployments/${depId}`),
         api.get(`/deployments/${depId}/health-checks`)
       ]);
-      setSelectedDep(depRes.data.data);
+      const deployment = depRes.data.data as Deployment;
+      setSelectedDep(deployment);
       setHealthChecks(hcRes.data.data);
+      const endpointStatus = deployment.metadata_info?.endpoint_status;
+      if (
+        ['active', 'deploying', 'verifying'].includes(deployment.status) &&
+        (!getPublicUrl(deployment) || endpointStatus !== 'ready')
+      ) {
+        setEndpointLoading(true);
+        try {
+          const endpointRes = await api.get(`/deployments/${depId}/endpoint`);
+          const updated = endpointRes.data.data as Deployment;
+          setSelectedDep(updated);
+          setDeployments((current) => current.map((item) => item.id === updated.id ? updated : item));
+        } catch (err) {
+          console.error('Failed to discover deployment endpoint:', err);
+        } finally {
+          setEndpointLoading(false);
+        }
+      }
     } catch (err) {
       console.error(err);
     }
   };
 
+  /**
+   * Background endpoint poller — runs independently of which deployment is
+   * selected. For every active/deploying/verifying deployment that doesn't yet
+   * have a ready public URL it calls the /endpoint route so the URL is
+   * discovered and persisted even before the user clicks on the card.
+   */
+  const refreshPendingEndpoints = async (current: Deployment[]) => {
+    const needsEndpoint = current.filter(
+      (d) =>
+        ['active', 'deploying', 'verifying'].includes(d.status) &&
+        d.metadata_info?.endpoint_status !== 'ready' &&
+        d.metadata_info?.endpoint_status !== 'error' &&
+        !getPublicUrl(d),
+    );
+    await Promise.allSettled(
+      needsEndpoint.map(async (d) => {
+        try {
+          const res = await api.get(`/deployments/${d.id}/endpoint`);
+          const updated = res.data.data as Deployment;
+          setDeployments((prev) =>
+            prev.map((item) => (item.id === updated.id ? updated : item)),
+          );
+          setSelectedDep((prev) =>
+            prev?.id === updated.id ? updated : prev,
+          );
+        } catch {
+          // silently ignore — will retry on next tick
+        }
+      }),
+    );
+  };
+
   useEffect(() => {
     loadAll();
-    const interval = setInterval(() => {
-      loadAll();
-      if (selectedDep) {
-        loadDeploymentDetails(selectedDep.id);
+    const interval = setInterval(async () => {
+      try {
+        const [depRes] = await Promise.all([api.get('/deployments?limit=50')]);
+        const fresh: Deployment[] = depRes.data.data;
+        setDeployments(fresh);
+        // Refresh health checks for the selected deployment
+        if (selectedDep) {
+          try {
+            const hcRes = await api.get(`/deployments/${selectedDep.id}/health-checks`);
+            setHealthChecks(hcRes.data.data);
+            const match = fresh.find((d) => d.id === selectedDep.id);
+            if (match) setSelectedDep(match);
+          } catch {
+            // ignore
+          }
+        }
+        // Discover public URLs for any deployment that doesn't have one yet
+        await refreshPendingEndpoints(fresh);
+      } catch (err) {
+        console.error(err);
       }
-    }, 3000);
+    }, 4000);
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDep?.id]);
 
   const filteredDeployments = deployments.filter((d) => {
@@ -74,6 +142,78 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
   });
 
   const getProjectName = (projId: string) => projects.find((p) => p.id === projId)?.name || projId;
+
+  const getPublicUrl = (deployment: Deployment): string | undefined => {
+    const metadata = deployment.metadata_info;
+    const publicUrl = metadata?.public_url ?? metadata?.adapter_details?.public_url;
+    return typeof publicUrl === 'string' && publicUrl.trim() ? publicUrl.trim() : undefined;
+  };
+
+  const copyPublicUrl = async (deployment: Deployment) => {
+    const publicUrl = getPublicUrl(deployment);
+    if (!publicUrl) return;
+    try {
+      await navigator.clipboard.writeText(publicUrl);
+      window.alert('Application URL copied.');
+    } catch (err) {
+      console.error('Failed to copy application URL:', err);
+      window.alert('Unable to copy the application URL.');
+    }
+  };
+
+  const deleteDeployment = async (deployment: Deployment) => {
+    if (!window.confirm(`Delete deployment ${deployment.id.slice(0, 8)}? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/deployments/${deployment.id}`);
+      setDeployments((current) => current.filter((item) => item.id !== deployment.id));
+      if (selectedDep?.id === deployment.id) {
+        setSelectedDep(null);
+      }
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || 'Unable to delete deployment.');
+    }
+  };
+
+  const deleteAllDeployments = async () => {
+    if (!window.confirm('Delete all completed deployment records? This cannot be undone.')) return;
+    try {
+      await api.delete('/deployments');
+      setDeployments([]);
+      setSelectedDep(null);
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || 'Unable to delete deployment history.');
+    }
+  };
+
+  const togglePause = async (deployment: Deployment) => {
+    const paused = deployment.metadata_info?.paused === true;
+    try {
+      const response = await api.post(`/deployments/${deployment.id}/${paused ? 'resume' : 'pause'}`);
+      const updated = response.data.data as Deployment;
+      setDeployments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedDep((current) => current?.id === updated.id ? updated : current);
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || `Unable to ${paused ? 'resume' : 'pause'} deployment.`);
+    }
+  };
+
+  const redeploy = async (deployment: Deployment) => {
+    if (!window.confirm('Redeploy this release to the same environment?')) return;
+    try {
+      await api.post('/deployments', {
+        project_id: deployment.project_id,
+        environment_id: deployment.environment_id,
+        release_id: deployment.release_id,
+        override_strategy: deployment.strategy,
+        redeploy: true,
+        simulate_failure: false,
+      });
+      window.alert('Redeployment started.');
+      await loadAll();
+    } catch (err: any) {
+      window.alert(err.response?.data?.detail || 'Unable to start redeployment.');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -101,6 +241,12 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
               {f.replace('_', ' ')}
             </button>
           ))}
+          <button
+            onClick={() => void deleteAllDeployments()}
+            className="ml-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-400 hover:bg-rose-500/10 whitespace-nowrap"
+          >
+            Delete All
+          </button>
         </div>
       </div>
 
@@ -122,13 +268,72 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
             >
               <div className="flex items-center justify-between mb-2">
                 <div className="font-bold text-sm text-white">{getProjectName(dep.project_id)}</div>
-                <StatusBadge status={dep.status} size="sm" />
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={dep.metadata_info?.paused ? 'paused' : dep.status} size="sm" />
+                  {!['active', 'failed', 'rolled_back', 'cancelled'].includes(dep.status) && (
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void togglePause(dep);
+                      }}
+                      aria-label={dep.metadata_info?.paused ? 'Resume deployment' : 'Pause deployment'}
+                      className="text-slate-500 hover:text-amber-400"
+                    >
+                      {dep.metadata_info?.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
+                  {['pending', 'active', 'failed', 'rolled_back', 'cancelled'].includes(dep.status) && (
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteDeployment(dep);
+                      }}
+                      aria-label="Delete deployment"
+                      className="text-slate-500 hover:text-rose-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center justify-between text-xs text-slate-400">
                 <span className="capitalize">Strategy: <strong className="text-slate-300">{dep.strategy}</strong></span>
                 <span className="font-mono text-[11px] text-slate-400">{new Date(dep.started_at).toLocaleTimeString()}</span>
               </div>
+
+              {getPublicUrl(dep) && (
+                <div className="mt-2 flex items-center gap-2">
+                  <a
+                    href={getPublicUrl(dep)}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(event) => event.stopPropagation()}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs text-emerald-300 hover:text-emerald-200"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{getPublicUrl(dep)}</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void copyPublicUrl(dep);
+                    }}
+                    aria-label="Copy application URL"
+                    className="text-slate-400 hover:text-white"
+                  >
+                    <Clipboard className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              {dep.status === 'active' && !getPublicUrl(dep) && (
+                <div className="mt-2 text-xs text-amber-300">
+                  {dep.metadata_info?.endpoint_status === 'error'
+                    ? 'Endpoint discovery failed'
+                    : 'Endpoint pending'}
+                </div>
+              )}
 
               <div className="mt-2.5 w-full bg-slate-800/80 rounded-full h-1 overflow-hidden">
                 <div
@@ -154,26 +359,90 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
                     <h2 className="text-xl font-extrabold text-white">
                       {getProjectName(selectedDep.project_id)}
                     </h2>
-                    <StatusBadge status={selectedDep.status} />
+                    <StatusBadge status={selectedDep.metadata_info?.paused ? 'paused' : selectedDep.status} />
                   </div>
                   <p className="text-xs text-slate-400 font-mono mt-1">
                     Deployment ID: {selectedDep.id}
                   </p>
                 </div>
 
-                {/* Emergency Rollback button */}
-                {['active', 'deploying', 'verifying'].includes(selectedDep.status) && (
-                  <button
-                    onClick={() => setShowRollbackModal(true)}
-                    className="px-4 py-2 rounded-xl text-xs font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25 transition-all flex items-center gap-2 self-start sm:self-auto shadow-sm"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Trigger Rollback</span>
-                  </button>
-                )}
+                <div className="flex flex-wrap gap-2 self-start sm:self-auto">
+                  {['failed', 'rolled_back', 'cancelled'].includes(selectedDep.status) && (
+                    <button
+                      onClick={() => void redeploy(selectedDep)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all flex items-center gap-2"
+                    >
+                      <Rocket className="w-3.5 h-3.5" />
+                      <span>Redeploy</span>
+                    </button>
+                  )}
+                  {['pending', 'scanning', 'deploying', 'verifying'].includes(selectedDep.status) && (
+                    <button
+                      onClick={() => void togglePause(selectedDep)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition-all flex items-center gap-2"
+                    >
+                      {selectedDep.metadata_info?.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                      <span>{selectedDep.metadata_info?.paused ? 'Resume' : 'Pause'}</span>
+                    </button>
+                  )}
+                  {['active', 'deploying', 'verifying'].includes(selectedDep.status) && (
+                    <button
+                      onClick={() => setShowRollbackModal(true)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25 transition-all flex items-center gap-2 shadow-sm"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Trigger Rollback</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Execution Info & Adapter Spec */}
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+                {endpointLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-amber-300">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Discovering application endpoint...
+                  </div>
+                ) : getPublicUrl(selectedDep) ? (
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="truncate font-mono text-xs text-emerald-300">
+                      {getPublicUrl(selectedDep)}
+                    </span>
+                    <div className="flex shrink-0 gap-2">
+                      <a
+                        href={getPublicUrl(selectedDep)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/30"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Open Application
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void copyPublicUrl(selectedDep)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/20"
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                        Copy URL
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-amber-300">
+                    <div className="font-semibold">
+                      {selectedDep.metadata_info?.endpoint_status === 'error'
+                        ? 'Endpoint discovery failed'
+                        : 'Endpoint Pending'}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-400">
+                      {selectedDep.metadata_info?.endpoint_error ||
+                        'Kubernetes has not assigned a reachable endpoint yet.'}
+                    </div>
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
                   <div className="text-[11px] text-slate-400 uppercase font-semibold">Strategy</div>

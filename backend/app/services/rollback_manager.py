@@ -11,6 +11,7 @@ from app.services.health_monitor import HealthMonitorService
 from app.core.metrics import ROLLBACKS
 from app.core.metrics import DEPLOYMENT_DURATION
 from app.core.logging import get_logger
+from app.core.kubernetes import normalize_kubernetes_name
 
 logger = get_logger("releasepilot.rollback")
 
@@ -130,10 +131,47 @@ class RollbackManager:
                 "level": "INFO" if rollback_verified else "ERROR",
                 "message": "Rollback readiness verification completed.",
             })
+            discover_endpoint = getattr(k8s_adapter, "discover_service_endpoint", None)
+            if rollback_verified and callable(discover_endpoint):
+                endpoint = await discover_endpoint(
+                    app_name=normalize_kubernetes_name(project.name),
+                    namespace=normalize_kubernetes_name(environment.k8s_namespace),
+                    port=project.default_port,
+                    health_path=project.health_path,
+                )
+                metadata = dict(deployment.metadata_info or {})
+                metadata["endpoint_status"] = endpoint.get("status", "unavailable")
+                if endpoint.get("public_url"):
+                    metadata["public_url"] = endpoint["public_url"]
+                    metadata.pop("endpoint_error", None)
+                else:
+                    metadata.pop("public_url", None)
+                    metadata["endpoint_error"] = endpoint.get(
+                        "error", "No reachable endpoint is available after rollback."
+                    )
+                metadata["endpoint_details"] = {
+                    key: value for key, value in endpoint.items() if key != "public_url"
+                }
+                deployment.metadata_info = metadata
+                deployment_logs.append({
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "level": "INFO" if endpoint.get("public_url") else "WARN",
+                    "message": (
+                        f"Rollback endpoint available at {endpoint['public_url']}"
+                        if endpoint.get("public_url")
+                        else metadata["endpoint_error"]
+                    ),
+                })
 
         deployment.status = "rolled_back" if rollback_verified else "failed"
         deployment.finished_at = datetime.utcnow()
         deployment.logs = deployment_logs
+        if not rollback_verified:
+            metadata = dict(deployment.metadata_info or {})
+            metadata.pop("public_url", None)
+            metadata["endpoint_status"] = "error"
+            metadata["endpoint_error"] = "Endpoint could not be verified after rollback."
+            deployment.metadata_info = metadata
 
         # Restore environment current_release_id
         if rollback_verified:

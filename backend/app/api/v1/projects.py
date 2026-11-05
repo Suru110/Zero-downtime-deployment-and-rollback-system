@@ -3,6 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user, get_owned_project
 from app.models.project import Project
+from app.models.deployment import Deployment
+from app.models.rollback import RollbackEvent
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectOut
 from app.schemas.common import ApiResponse
@@ -103,6 +105,17 @@ def delete_project(
     current_user: User = Depends(get_current_user)
 ):
     project = get_owned_project(db, project_id, current_user)
+    project_name = project.name
+    deployment_ids = [
+        deployment.id
+        for deployment in db.query(Deployment.id).filter(
+            Deployment.project_id == project.id
+        ).all()
+    ]
+    if deployment_ids:
+        db.query(RollbackEvent).filter(
+            RollbackEvent.source_deployment_id.in_(deployment_ids)
+        ).delete(synchronize_session=False)
     
     db.delete(project)
     db.commit()
@@ -114,7 +127,7 @@ def delete_project(
         entity_id=project_id,
         user_id=current_user.id,
         username=current_user.username,
-        details={"name": project.name}
+        details={"name": project_name}
     )
 
-    return ApiResponse(success=True, data=True, message=f"Project '{project.name}' deleted successfully.")
+    return ApiResponse(success=True, data=True, message=f"Project '{project_name}' deleted successfully.")

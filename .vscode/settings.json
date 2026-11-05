@@ -1,0 +1,4 @@
+{
+    "chat.agent.sandbox.enabled": "on",
+    "chat.agent.sandbox.network.allowLocalNetwork": true
+}

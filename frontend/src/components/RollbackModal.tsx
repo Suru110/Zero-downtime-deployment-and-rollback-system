@@ -16,11 +16,11 @@ export const RollbackModal: React.FC<RollbackModalProps> = ({
   deployment,
   onRollbackCompleted
 }) => {
-  if (!isOpen || !deployment) return null;
-
   const [reason, setReason] = useState('Critical regression detected in production metrics');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen || !deployment) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
