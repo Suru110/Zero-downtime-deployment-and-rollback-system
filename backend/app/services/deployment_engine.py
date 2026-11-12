@@ -181,6 +181,7 @@ class DeploymentEngine:
             canary_steps=environment.canary_steps,
             simulate_failure=simulate_failure,
             health_path=project.health_path,
+            deployment_id=deployment.id,
         )
 
         adapter_public_url = deploy_result.details.get("public_url")

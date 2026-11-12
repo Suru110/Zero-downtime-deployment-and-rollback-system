@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from app.adapters.base import BaseDeploymentAdapter, AdapterResult
 from app.core.config import settings
 from app.core.kubernetes import normalize_kubernetes_name
+from app.services.cloudflare_tunnel import cloudflare_tunnel_service
 
 class ProductionKubernetesAdapter(BaseDeploymentAdapter):
     _minikube_tunnels: Dict[str, subprocess.Popen] = {}
@@ -76,6 +77,7 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
         canary_steps: Optional[List[int]] = None,
         simulate_failure: bool = False,
         health_path: str = "/healthz",
+        deployment_id: Optional[str] = None,
     ) -> AdapterResult:
         logs: List[Dict[str, Any]] = []
         original_app_name = app_name
@@ -276,6 +278,7 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                 port=port,
                 health_path=health_path,
                 service=service,
+                deployment_id=deployment_id,
             )
             public_url = endpoint.get("public_url")
             if public_url:
@@ -322,6 +325,7 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
         port: int,
         health_path: str = "/healthz",
         service: Any = None,
+        deployment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self._core_client:
             return {
@@ -347,29 +351,53 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                         }
                     raise
             service_type = service.spec.type or "ClusterIP"
+            if settings.CLOUDFLARE_TUNNEL_ENABLED and deployment_id:
+                try:
+                    service_port = next(
+                        (item.port for item in (service.spec.ports or []) if item.port),
+                        port,
+                    )
+                    tunnel_endpoint = await cloudflare_tunnel_service.ensure_tunnel(
+                        deployment_id,
+                        namespace,
+                        service.metadata.name,
+                        service_port,
+                        health_path,
+                    )
+                    return {
+                        "status": "ready",
+                        "service_type": service_type,
+                        **tunnel_endpoint,
+                    }
+                except RuntimeError as exc:
+                    return {
+                        "status": "error",
+                        "error": str(exc),
+                        "service_type": service_type,
+                    }
+
             candidates = await self._service_url_candidates(service, namespace, port)
+            last_error = "Endpoint did not respond."
             if not candidates:
                 if service_type == "ClusterIP":
-                    error = (
+                    last_error = (
                         f"Service '{app_name}' is ClusterIP and has no externally reachable endpoint. "
                         "Expose it with NodePort, LoadBalancer, or Ingress."
                     )
                 else:
-                    error = f"Service '{app_name}' has no assigned external endpoint yet."
-                return {"status": "pending", "error": error, "service_type": service_type}
-
-            last_error = "Endpoint did not respond."
-            for attempt in range(settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS):
-                for candidate in candidates:
-                    if await self._endpoint_is_reachable(candidate, health_path):
-                        return {
-                            "status": "ready",
-                            "public_url": candidate,
-                            "service_type": service_type,
-                        }
-                    last_error = f"Endpoint {candidate} is not reachable yet."
-                if attempt + 1 < settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS:
-                    await asyncio.sleep(settings.K8S_ENDPOINT_DISCOVERY_INTERVAL_SECONDS)
+                    last_error = f"Service '{app_name}' has no assigned external endpoint yet."
+            else:
+                for attempt in range(settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS):
+                    for candidate in candidates:
+                        if await self._endpoint_is_reachable(candidate, health_path):
+                            return {
+                                "status": "ready",
+                                "public_url": candidate,
+                                "service_type": service_type,
+                            }
+                        last_error = f"Endpoint {candidate} is not reachable yet."
+                    if attempt + 1 < settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS:
+                        await asyncio.sleep(settings.K8S_ENDPOINT_DISCOVERY_INTERVAL_SECONDS)
             return {"status": "pending", "error": last_error, "service_type": service_type}
         except Exception as exc:
             return {

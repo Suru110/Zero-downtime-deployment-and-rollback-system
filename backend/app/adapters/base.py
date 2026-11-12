@@ -34,6 +34,7 @@ class BaseDeploymentAdapter(ABC):
         canary_steps: Optional[List[int]] = None,
         simulate_failure: bool = False,
         health_path: str = "/healthz",
+        deployment_id: Optional[str] = None,
     ) -> AdapterResult:
         """Trigger a zero-downtime deployment."""
         pass

@@ -17,6 +17,8 @@ from app.services.audit_service import AuditService
 from app.adapters import get_deployment_adapter
 from app.core.kubernetes import normalize_kubernetes_name
 from app.api.v1.releases import IMAGE_REFERENCE_PATTERN
+from app.services.cloudflare_tunnel import cloudflare_tunnel_service
+from sqlalchemy.orm.attributes import flag_modified
 
 router = APIRouter(prefix="/deployments", tags=["Deployments"])
 
@@ -281,6 +283,7 @@ async def get_deployment_endpoint(
             namespace=normalize_kubernetes_name(environment.k8s_namespace),
             port=project.default_port,
             health_path=project.health_path,
+            deployment_id=deployment.id,
         )
 
     metadata = dict(deployment.metadata_info or {})
@@ -297,6 +300,7 @@ async def get_deployment_endpoint(
         key: value for key, value in endpoint.items() if key != "public_url"
     }
     deployment.metadata_info = metadata
+    flag_modified(deployment, "metadata_info")
     db.commit()
     db.refresh(deployment)
     return ApiResponse(
@@ -310,7 +314,7 @@ async def get_deployment_endpoint(
     )
 
 @router.delete("/{deployment_id}", response_model=ApiResponse[bool])
-def delete_deployment(
+async def delete_deployment(
     deployment_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -321,6 +325,7 @@ def delete_deployment(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only pending or completed deployments can be deleted.",
         )
+    await cloudflare_tunnel_service.stop_tunnel(deployment.id)
     db.query(RollbackEvent).filter(
         RollbackEvent.source_deployment_id == deployment.id
     ).delete(synchronize_session=False)

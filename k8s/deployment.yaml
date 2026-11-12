@@ -1,0 +1,32 @@
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: registration-login
+  namespace: releasepilot
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: registration-login
+
+  template:
+    metadata:
+      labels:
+        app: registration-login
+
+    spec:
+      containers:
+        - name: registration-login
+
+          image: docker.io/surabhi1106/registration-login:v1.0.0
+
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP

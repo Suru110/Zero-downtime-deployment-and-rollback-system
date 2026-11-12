@@ -1,0 +1,19 @@
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: registration-login
+  namespace: releasepilot
+
+spec:
+  type: NodePort
+
+  selector:
+    app: registration-login
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3000

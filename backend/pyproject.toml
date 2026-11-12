@@ -14,7 +14,7 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q"
+addopts = "-ra -q --timeout=60"
 testpaths = [
     "tests",
 ]

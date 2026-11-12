@@ -10,11 +10,44 @@ from app.core.migrations import run_migrations
 from app.api.v1.router import api_router
 from app.core.logging import get_logger
 from app.core.metrics import REQUESTS, REQUEST_LATENCY
+from app.services.cloudflare_tunnel import cloudflare_tunnel_service
 from uuid import uuid4
 import time
 import os
 
 logger = get_logger("releasepilot.main")
+
+def _reset_stale_quick_tunnels():
+    try:
+        # Sweep any orphaned background processes from unexpected crashes
+        cloudflare_tunnel_service.cleanup_orphaned_processes()
+
+        with SessionLocal() as db:
+            from app.models.deployment import Deployment
+            from sqlalchemy.orm.attributes import flag_modified
+            deployments = db.query(Deployment).all()
+            updated_count = 0
+            for d in deployments:
+                if d.metadata_info:
+                    provider = (
+                        d.metadata_info.get("tunnel_provider")
+                        or d.metadata_info.get("endpoint_details", {}).get("tunnel_provider")
+                    )
+                    url = d.metadata_info.get("public_url") or ""
+                    if provider == "cloudflare-quick-tunnel" or "trycloudflare.com" in url:
+                        meta = dict(d.metadata_info)
+                        if meta.get("endpoint_status") == "ready":
+                            meta["endpoint_status"] = "pending"
+                            meta.pop("public_url", None)
+                            meta["endpoint_error"] = "Backend was restarted; tunnel needs to be re-established."
+                            d.metadata_info = meta
+                            flag_modified(d, "metadata_info")
+                            updated_count += 1
+            if updated_count > 0:
+                db.commit()
+                logger.info(f"Reset {updated_count} stale Cloudflare Quick Tunnel state(s) on startup.")
+    except Exception as exc:
+        logger.warning(f"Could not reset stale quick tunnels: {exc}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,8 +56,13 @@ async def lifespan(app: FastAPI):
         run_migrations()
     logger.info("Ensuring database tables exist...")
     init_db()
+    if not settings.DATABASE_URL.startswith("sqlite:///:memory:") and not os.environ.get("PYTEST_CURRENT_TEST"):
+        _reset_stale_quick_tunnels()
     logger.info("ReleasePilot API initialized and ready.")
-    yield
+    try:
+        yield
+    finally:
+        await cloudflare_tunnel_service.stop_all()
 
 app = FastAPI(
     title=settings.APP_NAME,

@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     K8S_ENDPOINT_VERIFY_TIMEOUT_SECONDS: float = 5.0
     K8S_MINIKUBE_PROFILE: Optional[str] = None
 
+    # Cloudflare Quick Tunnel
+    CLOUDFLARED_PATH: str = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
+    KUBECTL_PATH: str = "kubectl"
+    CLOUDFLARE_TUNNEL_ENABLED: bool = False
+    TUNNEL_STARTUP_TIMEOUT: float = 30.0
+    TUNNEL_PUBLIC_ENDPOINT_TIMEOUT: float = 120.0
+    ENDPOINT_VERIFICATION_TIMEOUT: float = 10.0
+    PORT_FORWARD_HOST: str = "127.0.0.1"
+
     # Argo CD
     ARGO_CD_SERVER: str = "http://localhost:8080"
     ARGO_CD_AUTH_TOKEN: str = "mock-token"

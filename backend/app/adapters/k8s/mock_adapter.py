@@ -31,6 +31,7 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
         canary_steps: Optional[List[int]] = None,
         simulate_failure: bool = False,
         health_path: str = "/healthz",
+        deployment_id: Optional[str] = None,
     ) -> AdapterResult:
         logs: List[Dict[str, Any]] = []
         self._log(logs, "INFO", f"[SIMULATION] Connecting to simulated cluster namespace: '{namespace}'")
@@ -142,6 +143,7 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
         port: int,
         health_path: str = "/healthz",
         service: Any = None,
+        deployment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a deterministic simulated endpoint so the UI always has a URL."""
         simulated_url = f"http://127.0.0.1:{port}"
