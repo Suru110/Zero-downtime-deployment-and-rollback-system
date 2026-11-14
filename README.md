@@ -117,6 +117,11 @@ database. Create accounts from the public Register page. No user accounts are cr
 automatically during startup. The optional `python -m app.core.seed` command
 only creates sample deployment data and never creates users.
 
+Swagger's **Authorize** dialog uses the OAuth2 form endpoint
+`POST /api/v1/auth/token` (email in the `username` field and the account
+password). The application's JSON login endpoint remains available at
+`POST /api/v1/auth/login`.
+
 To reset only a local development database (never use this against production),
 stop the backend and remove `backend/releasepilot.db`, then run
 `alembic upgrade head` again. For the Docker PostgreSQL volume, use
@@ -157,10 +162,20 @@ Copy [.env.example](.env.example) to `.env`. Important settings include:
 
 - `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`.
 - `JWT_SECRET_KEY`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `CORS_ORIGINS`.
-- `ENABLE_MOCK_ADAPTERS`, `KUBERNETES_IN_CLUSTER`, `KUBECONFIG_PATH`,
-  `K8S_PUBLIC_BASE_URL`, and the `K8S_ENDPOINT_*` discovery settings control
-  live Kubernetes endpoint discovery. Mock deployments intentionally do not
-  publish a fake URL.
+- `KUBERNETES_MODE=mock` explicitly selects the simulated Kubernetes adapter;
+  use `KUBERNETES_MODE=production` for a real cluster. This is independent of
+  `ENABLE_MOCK_ADAPTERS`, which controls the scanner, GitOps, and metrics
+  adapters. `KUBERNETES_IN_CLUSTER`, `KUBECONFIG_PATH`, `K8S_PUBLIC_BASE_URL`,
+  and the `K8S_ENDPOINT_*` settings control live Kubernetes endpoint discovery.
+  A real deployment is not promoted to active until its public HTTP endpoint
+  has been verified. Mock deployments intentionally do not publish a fake URL.
+- `CLOUDFLARE_TUNNEL_ENABLED`, `CLOUDFLARED_PATH`, `KUBECTL_PATH`,
+  `TUNNEL_STARTUP_TIMEOUT`, `TUNNEL_PUBLIC_ENDPOINT_TIMEOUT`,
+  `ENDPOINT_VERIFICATION_TIMEOUT`, and `PORT_FORWARD_HOST` configure optional
+  Cloudflare Quick Tunnels. They run `kubectl port-forward` and `cloudflared`
+  on the backend host. Quick Tunnel URLs are temporary and can stop working
+  when the backend or tunnel process restarts; use a stable Ingress or
+  LoadBalancer URL for production.
 - `TRIVY_SERVER_URL`, `TRIVY_SEVERITY_THRESHOLD`.
 - `PROMETHEUS_URL`, `GRAFANA_URL`.
 

@@ -10,6 +10,9 @@ from app.core.config import settings
 from app.core.database import Base
 
 config = context.config
+# Only reconfigure logging if running alembic from the CLI (config_file_name is
+# set to None when invoked programmatically from migrations.py so that alembic
+# does not clobber the application's structured logging setup).
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -31,7 +34,9 @@ def run_migrations_online() -> None:
     configuration["sqlalchemy.url"] = settings.DATABASE_URL
     connect_args = {}
     if settings.DATABASE_URL.startswith("sqlite"):
-        connect_args["timeout"] = 30
+        # 60-second timeout: waits for any other process holding the SQLite
+        # write lock to release it rather than failing immediately.
+        connect_args["timeout"] = 60
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

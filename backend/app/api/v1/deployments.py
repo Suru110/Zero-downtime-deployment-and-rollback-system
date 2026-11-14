@@ -26,6 +26,59 @@ TERMINAL_STATUSES = {"active", "rolled_back", "failed", "cancelled"}
 DELETABLE_STATUSES = TERMINAL_STATUSES | {"pending"}
 PAUSABLE_STATUSES = {"pending", "scanning", "deploying", "verifying"}
 
+
+def _invalidate_stale_quick_tunnel(deployment: Deployment) -> bool:
+    metadata = dict(deployment.metadata_info or {})
+    endpoint_details = dict(metadata.get("endpoint_details") or {})
+    adapter_details = dict(metadata.get("adapter_details") or {})
+    public_url = (
+        metadata.get("public_url")
+        or endpoint_details.get("public_url")
+        or adapter_details.get("public_url")
+    )
+    is_quick_tunnel = (
+        endpoint_details.get("tunnel_provider") == "cloudflare-quick-tunnel"
+        or metadata.get("tunnel_provider") == "cloudflare-quick-tunnel"
+        or (
+            isinstance(public_url, str)
+            and ".trycloudflare.com" in public_url.lower()
+        )
+    )
+    if not is_quick_tunnel:
+        return False
+    if (
+        isinstance(public_url, str)
+        and cloudflare_tunnel_service.has_running_tunnel(deployment.id, public_url)
+    ):
+        return False
+    if (
+        metadata.get("endpoint_status") != "ready"
+        and not metadata.get("public_url")
+        and not endpoint_details.get("public_url")
+        and not adapter_details.get("public_url")
+    ):
+        return False
+
+    cloudflare_tunnel_service.stop_tunnel_sync(deployment.id)
+    metadata.pop("public_url", None)
+    metadata["endpoint_status"] = "pending"
+    metadata["endpoint_phase"] = "waiting"
+    metadata["endpoint_error"] = (
+        "The Cloudflare tunnel is no longer running and must be re-established."
+    )
+    endpoint_details.update(
+        {"status": "pending", "tunnel_process_state": "stopped"}
+    )
+    endpoint_details.pop("public_url", None)
+    endpoint_details.pop("process_ids", None)
+    metadata["endpoint_details"] = endpoint_details
+    adapter_details.pop("public_url", None)
+    metadata["adapter_details"] = adapter_details
+    deployment.metadata_info = metadata
+    flag_modified(deployment, "metadata_info")
+    return True
+
+
 def _clear_current_release_if_deleted(
     db: Session,
     environment_id: str,
@@ -54,6 +107,11 @@ def list_deployments(
     if environment_id:
         query = query.filter(Deployment.environment_id == environment_id)
     deployments = query.order_by(Deployment.started_at.desc()).offset(skip).limit(limit).all()
+    stale_updates = [
+        _invalidate_stale_quick_tunnel(deployment) for deployment in deployments
+    ]
+    if any(stale_updates):
+        db.commit()
     return ApiResponse(
         success=True,
         data=[DeploymentOut.model_validate(d) for d in deployments]
@@ -257,6 +315,9 @@ def get_deployment(
     current_user: User = Depends(get_current_user)
 ):
     deployment = get_owned_deployment(db, deployment_id, current_user)
+    if _invalidate_stale_quick_tunnel(deployment):
+        db.commit()
+        db.refresh(deployment)
     return ApiResponse(success=True, data=DeploymentOut.model_validate(deployment))
 
 @router.get("/{deployment_id}/endpoint", response_model=ApiResponse[DeploymentOut])
@@ -271,31 +332,89 @@ async def get_deployment_endpoint(
     if not project or not environment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment target not found.")
 
-    adapter = get_deployment_adapter()
+    adapter = get_deployment_adapter(
+        "mock" if deployment.is_simulated else "production"
+    )
+    metadata = dict(deployment.metadata_info or {})
+    previous_metadata_namespace = metadata.get("namespace")
+    namespace = normalize_kubernetes_name(environment.k8s_namespace)
     endpoint = {
         "status": "unavailable",
         "error": "The configured adapter does not expose a reachable endpoint.",
     }
+    previous_endpoint = dict(metadata.get("endpoint_details") or {})
+    previous_namespace = (
+        previous_endpoint.get("namespace") or previous_metadata_namespace
+    )
+    service_name = (
+        previous_endpoint.get("service_name")
+        if previous_namespace in {None, namespace}
+        else None
+    )
+    if previous_namespace not in {None, namespace}:
+        for key in (
+            "service_name",
+            "service_type",
+            "service_port",
+            "target_port",
+            "resolved_target_port",
+            "endpoint_provider",
+        ):
+            metadata.pop(key, None)
     discover_endpoint = getattr(adapter, "discover_service_endpoint", None)
     if callable(discover_endpoint):
         endpoint = await discover_endpoint(
             app_name=normalize_kubernetes_name(project.name),
-            namespace=normalize_kubernetes_name(environment.k8s_namespace),
+            namespace=namespace,
             port=project.default_port,
             health_path=project.health_path,
             deployment_id=deployment.id,
+            service_name=service_name,
         )
 
-    metadata = dict(deployment.metadata_info or {})
-    metadata["endpoint_status"] = endpoint.get("status", "unavailable")
-    if endpoint.get("public_url"):
-        metadata["public_url"] = endpoint["public_url"]
+    metadata["namespace"] = endpoint.get("namespace", namespace)
+    public_url = endpoint.get("public_url")
+    endpoint_status = endpoint.get("status", "unavailable")
+    if endpoint_status == "ready" and public_url:
+        metadata["endpoint_status"] = "ready"
+        metadata["endpoint_phase"] = "ready"
+        metadata["public_url"] = public_url
         metadata.pop("endpoint_error", None)
+        if endpoint.get("last_verified_at"):
+            metadata["last_verified_at"] = endpoint["last_verified_at"]
+        else:
+            metadata.pop("last_verified_at", None)
     else:
+        metadata["endpoint_status"] = endpoint_status
+        metadata["endpoint_phase"] = (
+            "failed" if endpoint_status in {"error", "unavailable"} else "waiting"
+        )
         metadata.pop("public_url", None)
+        metadata.pop("last_verified_at", None)
         metadata["endpoint_error"] = endpoint.get(
             "error", "No reachable endpoint has been assigned yet."
         )
+    for key in (
+        "namespace",
+        "service_name",
+        "service_type",
+        "service_port",
+        "target_port",
+        "resolved_target_port",
+    ):
+        if key in endpoint:
+            metadata[key] = endpoint[key]
+    endpoint_provider = (
+        endpoint.get("tunnel_provider")
+        or endpoint.get("endpoint_provider")
+    )
+    if endpoint_provider:
+        metadata["endpoint_provider"] = endpoint_provider
+    else:
+        metadata.pop("endpoint_provider", None)
+    adapter_details = dict(metadata.get("adapter_details") or {})
+    adapter_details.pop("public_url", None)
+    metadata["adapter_details"] = adapter_details
     metadata["endpoint_details"] = {
         key: value for key, value in endpoint.items() if key != "public_url"
     }
@@ -308,7 +427,7 @@ async def get_deployment_endpoint(
         data=DeploymentOut.model_validate(deployment),
         message=(
             "Application endpoint is ready."
-            if endpoint.get("public_url")
+            if endpoint_status == "ready" and public_url
             else "Application endpoint is not ready yet."
         ),
     )

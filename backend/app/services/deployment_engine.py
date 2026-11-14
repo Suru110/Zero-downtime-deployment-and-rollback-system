@@ -122,7 +122,14 @@ class DeploymentEngine:
 
         k8s_adapter = get_deployment_adapter()
         if not k8s_adapter.is_simulated and not getattr(k8s_adapter, "_k8s_client", None):
-            cls._append_log(logs, "ERROR", "Pre-flight failed: Kubernetes cluster unreachable. Real cluster mode is active but connection failed.")
+            error = getattr(k8s_adapter, "initialization_error", None) or (
+                "Verify that Kubernetes is reachable and KUBECONFIG_PATH points to a valid kubeconfig."
+            )
+            cls._append_log(
+                logs,
+                "ERROR",
+                f"Pre-flight failed: Kubernetes cluster unavailable. {error}",
+            )
             cls._finalize_failed_deployment(deployment, logs, deployment_started)
             db.commit()
             return
@@ -162,7 +169,6 @@ class DeploymentEngine:
         deployment.logs = logs
         db.commit()
 
-        k8s_adapter = get_deployment_adapter()
         deployment.adapter_name = k8s_adapter.adapter_name
         deployment.is_simulated = k8s_adapter.is_simulated
 
@@ -184,14 +190,61 @@ class DeploymentEngine:
             deployment_id=deployment.id,
         )
 
-        adapter_public_url = deploy_result.details.get("public_url")
-        deployment.metadata_info = {
-            **(deployment.metadata_info or {}),
-            **({"public_url": adapter_public_url} if adapter_public_url else {}),
-            "endpoint_status": deploy_result.details.get("endpoint_status", "unavailable"),
-            **({"endpoint_error": deploy_result.details["endpoint_error"]} if deploy_result.details.get("endpoint_error") else {}),
-            "adapter_details": deploy_result.details,
-        }
+        adapter_details = dict(deploy_result.details or {})
+        adapter_public_url = adapter_details.get("public_url")
+        adapter_details.pop("public_url", None)
+        endpoint_status = adapter_details.get("endpoint_status", "unavailable")
+
+        metadata = dict(deployment.metadata_info or {})
+        if adapter_public_url and endpoint_status == "ready":
+            metadata["public_url"] = adapter_public_url
+            metadata.pop("endpoint_error", None)
+        else:
+            metadata.pop("public_url", None)
+
+        endpoint_details = adapter_details.get("endpoint_details")
+        if isinstance(endpoint_details, dict):
+            metadata["endpoint_details"] = {
+                **endpoint_details,
+                "status": endpoint_status,
+            }
+            metadata["namespace"] = endpoint_details.get(
+                "namespace", normalized_namespace
+            )
+            for key in (
+                "service_name",
+                "service_type",
+                "service_port",
+                "target_port",
+                "resolved_target_port",
+            ):
+                if key in endpoint_details:
+                    metadata[key] = endpoint_details[key]
+            endpoint_provider = (
+                endpoint_details.get("tunnel_provider")
+                or endpoint_details.get("endpoint_provider")
+            )
+            if endpoint_provider:
+                metadata["endpoint_provider"] = endpoint_provider
+            if endpoint_details.get("last_verified_at"):
+                metadata["last_verified_at"] = endpoint_details["last_verified_at"]
+            else:
+                metadata.pop("last_verified_at", None)
+        else:
+            metadata.pop("endpoint_details", None)
+        metadata["endpoint_status"] = endpoint_status
+
+        endpoint_error = adapter_details.get("endpoint_error")
+        if endpoint_error:
+            metadata["endpoint_error"] = endpoint_error
+        elif adapter_public_url:
+            metadata.pop("endpoint_error", None)
+
+        if adapter_public_url and endpoint_status == "ready":
+            metadata["endpoint_phase"] = "ready"
+            metadata.pop("endpoint_error", None)
+        metadata["adapter_details"] = adapter_details
+        deployment.metadata_info = metadata
         logs.extend(deploy_result.logs)
         deployment.logs = logs
 

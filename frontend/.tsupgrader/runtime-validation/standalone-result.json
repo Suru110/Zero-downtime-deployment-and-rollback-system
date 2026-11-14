@@ -1,0 +1,113 @@
+{
+  "planHash": "6fb00f7d00ca2a589f448626cea4dee18ec4d573a82406616f4b81feffbc6434",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-11-14T09:32:54.1364726Z",
+  "retryCount": 0,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 39343,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "production-build",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E releasepilot-frontend@0.1.0 build\r\n\u003E tsc \u0026\u0026 vite build\r\n\r\n\u001B[36mvite v6.4.5 \u001B[32mbuilding for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u001B[32m\u2713\u001B[39m 2271 modules transformed.\r\nrendering chunks...\r\ncomputing gzip size...\r\n\u001B[2mdist/\u001B[22m\u001B[32mindex.html                 \u001B[39m\u001B[1m\u001B[2m  1.43 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   0.80 kB\u001B[22m\r\n\u001B[33m\r\n(!) Some chunks are larger than 500 kB after minification. Consider:\r\n- Using dynamic import() to code-split the application\r\n- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks\r\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\u001B[39m\r\n\u001B[2mdist/\u001B[22m\u001B[35massets/index-D4FC6aW4.css  \u001B[39m\u001B[1m\u001B[2m 40.57 kB\u001B[22m\u001B[1m\u001B[22m\u001B[2m \u2502 gzip:   7.82 kB\u001B[22m\r\n\u001B[2mdist/\u001B[22m\u001B[36massets/index-BHb5KFSp.js   \u001B[39m\u001B[1m\u001B[33m732.00 kB\u001B[39m\u001B[22m\u001B[2m \u2502 gzip: 207.32 kB\u001B[22m\r\n\u001B[32m\u2713 built in 8.71s\u001B[39m\r\n",
+        "durationMs": 13965
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E releasepilot-frontend@0.1.0 test\r\n\u003E vitest run\r\n\r\n\r\n\u001B[1m\u001B[7m\u001B[36m RUN \u001B[39m\u001B[27m\u001B[22m \u001B[36mv2.1.9 \u001B[39m\u001B[90mC:/Users/surab/Downloads/releasepilot/frontend\u001B[39m\r\n\r\n \u001B[32m\u2713\u001B[39m src/utils/publicUrl.test.ts \u001B[2m(\u001B[22m\u001B[2m19 tests\u001B[22m\u001B[2m)\u001B[22m\u001B[90m 13\u001B[2mms\u001B[22m\u001B[39m\r\n \u001B[32m\u2713\u001B[39m src/pages/DeploymentsPage.test.tsx \u001B[2m(\u001B[22m\u001B[2m5 tests\u001B[22m\u001B[2m)\u001B[22m\u001B[33m 412\u001B[2mms\u001B[22m\u001B[39m\r\n \u001B[32m\u2713\u001B[39m src/__tests__/App.test.tsx \u001B[2m(\u001B[22m\u001B[2m1 test\u001B[22m\u001B[2m)\u001B[22m\u001B[90m 125\u001B[2mms\u001B[22m\u001B[39m\r\n\r\n\u001B[2m Test Files \u001B[22m \u001B[1m\u001B[32m3 passed\u001B[39m\u001B[22m\u001B[90m (3)\u001B[39m\r\n\u001B[2m      Tests \u001B[22m \u001B[1m\u001B[32m25 passed\u001B[39m\u001B[22m\u001B[90m (25)\u001B[39m\r\n\u001B[2m   Start at \u001B[22m 15:02:42\r\n\u001B[2m   Duration \u001B[22m 7.57s\u001B[2m (transform 526ms, setup 1.00s, collect 3.44s, tests 550ms, environment 7.33s, prepare 3.93s)\u001B[22m\r\n\r\n",
+        "durationMs": 10060,
+        "testResults": {
+          "testFramework": "vitest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 25,
+          "testsPassed": 25,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      },
+      {
+        "name": "dev-server-home-200",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": false,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "\u003Cprobe error: \u003E",
+        "durationMs": 3532
+      }
+    ],
+    "executions": [
+      {
+        "source": "setup[0]",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "ci"
+        ],
+        "cwd": "C:\\Users\\surab\\Downloads\\releasepilot\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "production-build",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": "C:\\Users\\surab\\Downloads\\releasepilot\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "C:\\Users\\surab\\Downloads\\releasepilot\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "dev-server-home-200",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "dev",
+          "--",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "5187"
+        ],
+        "cwd": "C:\\Users\\surab\\Downloads\\releasepilot\\frontend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

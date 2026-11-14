@@ -63,7 +63,9 @@ class RollbackManager:
             raise ValueError("No previous release available for rollback")
 
         project = environment.project
-        k8s_adapter = get_deployment_adapter()
+        k8s_adapter = get_deployment_adapter(
+            "mock" if deployment.is_simulated else "production"
+        )
 
         logger.warning(
             f"INITIATING ROLLBACK: Dep={deployment.id} TargetRelease={restored_release.version} Reason='{reason}'",

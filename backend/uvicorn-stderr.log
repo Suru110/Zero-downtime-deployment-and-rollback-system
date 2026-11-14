@@ -1,0 +1,7 @@
+INFO:     Started server process [74848]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-11-14T10:45:02.807241Z", "level": "INFO", "logger": "releasepilot.main", "message": "Applying ReleasePilot database migrations..."}
+{"timestamp": "2026-11-14T10:45:02.807241Z", "level": "INFO", "logger": "releasepilot.migrations", "message": "Checking database migration state."}
+{"timestamp": "2026-11-14T10:45:02.809252Z", "level": "INFO", "logger": "releasepilot.migrations", "message": "Applying database migrations to head."}
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.

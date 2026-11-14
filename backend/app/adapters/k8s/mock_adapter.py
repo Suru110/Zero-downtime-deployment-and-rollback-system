@@ -78,11 +78,7 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
             self._log(logs, "INFO", f"[SIMULATION] Readiness probe passed on {replicas} updated pod(s). Terminating old replica set.")
             await asyncio.sleep(0.2)
 
-        # Build a deterministic simulated public URL from the app name and port.
-        # This mirrors what a real NodePort service would expose via minikube.
-        simulated_url = f"http://127.0.0.1:{port}"
         self._log(logs, "INFO", f"[SIMULATION] Deployment completed successfully with zero downtime.")
-        self._log(logs, "INFO", f"[SIMULATION] Application endpoint available at {simulated_url}")
         return AdapterResult(
             success=True,
             is_simulated=True,
@@ -92,8 +88,8 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
                 "strategy": strategy,
                 "active_replicas": replicas,
                 "image": image,
-                "public_url": simulated_url,
-                "endpoint_status": "ready",
+                "endpoint_status": "unavailable",
+                "endpoint_error": "The simulated adapter does not provide a public endpoint.",
                 "service_type": "NodePort",
                 "service_port": port,
             },
@@ -145,10 +141,9 @@ class MockKubernetesAdapter(BaseDeploymentAdapter):
         service: Any = None,
         deployment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Return a deterministic simulated endpoint so the UI always has a URL."""
-        simulated_url = f"http://127.0.0.1:{port}"
+        """Report that simulated deployments do not have a public endpoint."""
         return {
-            "status": "ready",
-            "public_url": simulated_url,
+            "status": "unavailable",
+            "error": "The simulated adapter does not provide a public endpoint.",
             "service_type": "NodePort",
         }

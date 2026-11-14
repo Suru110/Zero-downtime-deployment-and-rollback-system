@@ -11,11 +11,23 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 The default configuration uses the simulated adapters. Set
-`KUBERNETES_MODE=real` to use the configured Kubernetes context. Keep
+`KUBERNETES_MODE=production` to use the configured Kubernetes context, or
+explicitly set `KUBERNETES_MODE=mock` for simulated deployments. Keep
 `ENABLE_MOCK_ADAPTERS=true` unless Trivy, Argo CD, and Prometheus endpoints are
-also configured; Kubernetes mode is independently selectable. Simulated
+also configured; this setting does not select the Kubernetes adapter. Simulated
 responses are marked with
 `is_simulated=true` and are never presented as live cluster results.
+
+Swagger's **Authorize** dialog submits the OAuth2 form to
+`POST /api/v1/auth/token`, using the account email as `username`. The JSON
+login endpoint remains available at `POST /api/v1/auth/login`.
+
+In production mode, a rollout is only reported as active after Kubernetes
+readiness and public HTTP endpoint verification succeed. For optional
+Cloudflare Quick Tunnels, enable `CLOUDFLARE_TUNNEL_ENABLED` and configure
+`CLOUDFLARED_PATH` and `KUBECTL_PATH` on the backend host. Quick Tunnel URLs
+are temporary and rely on the local port-forward and tunnel processes remaining
+alive; use a stable Ingress or LoadBalancer endpoint for production.
 
 For the local `Registration-login` application, register the image with port
 `3000` and health path `/healthz`. Its SQLite database is stored inside the

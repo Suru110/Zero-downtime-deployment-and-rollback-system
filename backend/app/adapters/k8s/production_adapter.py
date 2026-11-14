@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlsplit
 from app.adapters.base import BaseDeploymentAdapter, AdapterResult
@@ -18,7 +18,9 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
 
     def __init__(self):
         self._k8s_client = None
+        self._core_client = None
         self._networking_client = None
+        self.initialization_error: Optional[str] = None
         self._init_client()
 
     @property
@@ -34,20 +36,25 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
             from kubernetes import client, config
             if settings.KUBERNETES_IN_CLUSTER:
                 config.load_incluster_config()
-            elif settings.KUBECONFIG_PATH and os.path.exists(os.path.expanduser(settings.KUBECONFIG_PATH)):
-                config.load_kube_config(config_file=os.path.expanduser(settings.KUBECONFIG_PATH))
+            elif settings.KUBECONFIG_PATH:
+                kubeconfig_path = os.path.expanduser(settings.KUBECONFIG_PATH)
+                if not os.path.exists(kubeconfig_path):
+                    raise FileNotFoundError("Configured kubeconfig file was not found.")
+                config.load_kube_config(config_file=kubeconfig_path)
             else:
-                try:
-                    config.load_kube_config()
-                except Exception:
-                    # No local kubeconfig found
-                    self._k8s_client = None
-                    return
+                config.load_kube_config()
             self._k8s_client = client.AppsV1Api()
             self._core_client = client.CoreV1Api()
             self._networking_client = client.NetworkingV1Api()
-        except Exception:
+        except Exception as exc:
             self._k8s_client = None
+            self._core_client = None
+            self._networking_client = None
+            self.initialization_error = (
+                f"Kubernetes client initialization failed ({type(exc).__name__}). "
+                "Verify that Minikube is running and KUBECONFIG_PATH points to a "
+                "valid kubeconfig."
+            )
 
     def _log(self, logs: List[Dict[str, Any]], level: str, message: str) -> None:
         logs.append({
@@ -131,6 +138,45 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                 self._core_client.create_namespace(body=ns_body)
                 self._log(logs, "INFO", f"Created namespace '{namespace}'.")
 
+            try:
+                existing_service = self._core_client.read_namespaced_service(
+                    name=app_name,
+                    namespace=namespace,
+                )
+            except Exception as exc:
+                if not isinstance(exc, client.ApiException) or exc.status != 404:
+                    raise
+                existing_service = None
+
+            service_selector = (
+                dict(existing_service.spec.selector or {})
+                if existing_service is not None
+                else {"app": app_name}
+            )
+            if service_selector.get("app") != app_name:
+                return AdapterResult(
+                    success=False,
+                    is_simulated=False,
+                    adapter_name=self.adapter_name,
+                    message="The Kubernetes Service selector does not match this application.",
+                    details={
+                        "error": (
+                            f"Service '{app_name}' must select app='{app_name}' pods."
+                        ),
+                        "service_name": app_name,
+                        "namespace": namespace,
+                    },
+                    logs=logs,
+                )
+
+            named_target_ports = sorted({
+                item.target_port
+                for item in (existing_service.spec.ports or [])
+                if isinstance(item.target_port, str)
+            }) if existing_service is not None else []
+            container_port_names = named_target_ports or ["http"]
+            pod_labels = {"app": app_name, **service_selector}
+
             # Build full Deployment manifest with rolling update strategy and probes
             deployment_env = dict(env_vars)
             health_path = deployment_env.pop("HEALTH_PATH", "/healthz")
@@ -151,14 +197,20 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                         ),
                     ),
                     template=client.V1PodTemplateSpec(
-                        metadata=client.V1ObjectMeta(labels={"app": app_name}),
+                        metadata=client.V1ObjectMeta(labels=pod_labels),
                         spec=client.V1PodSpec(
                             termination_grace_period_seconds=30,
                             containers=[
                                 client.V1Container(
                                     name=app_name,
                                     image=image,
-                                    ports=[client.V1ContainerPort(container_port=port)],
+                                    ports=[
+                                        client.V1ContainerPort(
+                                            name=port_name,
+                                            container_port=port,
+                                        )
+                                        for port_name in container_port_names
+                                    ],
                                     env=[
                                         client.V1EnvVar(name=k, value=v)
                                         for k, v in deployment_env.items()
@@ -198,7 +250,8 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                 ),
             )
 
-            # Also ensure a Service exists for this deployment
+            # Create a Service only when one does not already exist. Existing
+            # service type, selector, and port mappings are authoritative.
             svc_manifest = client.V1Service(
                 metadata=client.V1ObjectMeta(
                     name=app_name,
@@ -206,7 +259,7 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                     labels={"app": app_name, "managed-by": "releasepilot"},
                 ),
                 spec=client.V1ServiceSpec(
-                    selector={"app": app_name},
+                    selector=service_selector,
                     ports=[client.V1ServicePort(port=port, target_port=port)],
                     type="NodePort",
                 ),
@@ -225,33 +278,16 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                 self._k8s_client.create_namespaced_deployment(namespace=namespace, body=deployment_manifest)
                 self._log(logs, "INFO", f"Created new Deployment '{app_name}' with image '{image}', {replicas} replicas.")
 
-            # Create-or-patch Service
-            try:
-                existing_service = self._core_client.read_namespaced_service(
-                    name=app_name, namespace=namespace
-                )
-                existing_ports = existing_service.spec.ports or []
-                if existing_service.spec.cluster_ip:
-                    svc_manifest.spec.cluster_ip = existing_service.spec.cluster_ip
-                # The attribute name for clusterIPs varies across kubernetes-client
-                # versions: 'cluster_ips' in older releases, 'cluster_i_ps' in v31+.
-                for _attr in ("cluster_i_ps", "cluster_ips"):
-                    _val = getattr(existing_service.spec, _attr, None)
-                    if _val:
-                        try:
-                            setattr(svc_manifest.spec, _attr, _val)
-                        except AttributeError:
-                            pass
-                        break
-                if existing_ports and existing_ports[0].node_port:
-                    svc_manifest.spec.ports[0].node_port = existing_ports[0].node_port
-                self._core_client.patch_namespaced_service(name=app_name, namespace=namespace, body=svc_manifest)
-                self._log(logs, "INFO", f"Patched existing Service '{app_name}'.")
-            except Exception as exc:
-                if not isinstance(exc, client.ApiException) or exc.status != 404:
-                    raise
+            if existing_service is None:
                 self._core_client.create_namespaced_service(namespace=namespace, body=svc_manifest)
                 self._log(logs, "INFO", f"Created Service '{app_name}' on port {port}.")
+            else:
+                self._log(
+                    logs,
+                    "INFO",
+                    f"Using existing Service '{existing_service.metadata.name}' "
+                    "without changing its type or port mappings.",
+                )
             service = self._core_client.read_namespaced_service(name=app_name, namespace=namespace)
             ready = 0
             for _ in range(settings.DEFAULT_HEALTH_CHECK_MAX_ATTEMPTS):
@@ -289,20 +325,33 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                     "WARN",
                     endpoint.get("error", "Service created, but no reachable public URL could be discovered."),
                 )
+            # The deployment itself succeeded — Kubernetes pods are running.
+            # Whether the public URL was discovered is a separate concern handled
+            # by the endpoint discovery route. Never fail the deployment just
+            # because the URL couldn't be reached from this host.
             return AdapterResult(
                 success=True,
                 is_simulated=False,
                 adapter_name=self.adapter_name,
-                message="Kubernetes Deployment resource successfully patched.",
+                message=(
+                    f"Kubernetes rollout complete. Public endpoint: {public_url}"
+                    if public_url
+                    else "Kubernetes rollout complete. Public URL discovery pending."
+                ),
                 details={
                     "app": app_name,
                     "image": image,
                     "public_url": public_url,
                     "endpoint_status": endpoint["status"],
+                    "endpoint_details": {
+                        key: value
+                        for key, value in endpoint.items()
+                        if key != "public_url"
+                    },
                     **({"endpoint_error": endpoint["error"]} if endpoint.get("error") else {}),
-                    "service_type": service.spec.type,
-                    "service_port": port,
-                    "target_port": port,
+                    "service_type": endpoint.get("service_type", service.spec.type),
+                    "service_port": endpoint.get("service_port"),
+                    "target_port": endpoint.get("target_port"),
                 },
                 logs=logs
             )
@@ -326,17 +375,19 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
         health_path: str = "/healthz",
         service: Any = None,
         deployment_id: Optional[str] = None,
+        service_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self._core_client:
             return {
                 "status": "error",
-                "error": "Kubernetes client is not connected.",
+                "error": self.initialization_error
+                or "Kubernetes client is not connected. Verify the cluster and kubeconfig.",
             }
         try:
             if service is None:
                 try:
                     service = self._core_client.read_namespaced_service(
-                        name=app_name,
+                        name=service_name or app_name,
                         namespace=namespace,
                     )
                 except Exception as exc:
@@ -350,33 +401,128 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                             ),
                         }
                     raise
+            service_name = service.metadata.name
             service_type = service.spec.type or "ClusterIP"
+            if not self._k8s_client:
+                return {
+                    "status": "error",
+                    "error": "The Kubernetes Deployment could not be verified.",
+                    "service_name": service_name,
+                    "namespace": namespace,
+                    "service_type": service_type,
+                }
+
+            deployment = self._k8s_client.read_namespaced_deployment(
+                name=app_name,
+                namespace=namespace,
+            )
+            service_selector = dict(service.spec.selector or {})
+            deployment_selector = dict(
+                deployment.spec.selector.match_labels or {}
+            )
+            pod_labels = dict(
+                deployment.spec.template.metadata.labels or {}
+            )
+            if (
+                not service_selector
+                or any(
+                    service_selector.get(key) != value
+                    for key, value in deployment_selector.items()
+                )
+                or any(
+                    pod_labels.get(key) != value
+                    for key, value in service_selector.items()
+                )
+            ):
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Service '{service_name}' in namespace '{namespace}' "
+                        "does not select the intended Deployment pods."
+                    ),
+                    "service_name": service_name,
+                    "namespace": namespace,
+                    "service_type": service_type,
+                }
+
+            matching_ports, port_error = self._matching_service_ports(
+                service,
+                deployment,
+                port,
+            )
+            if port_error:
+                return {
+                    "status": "error",
+                    "error": port_error,
+                    "service_name": service_name,
+                    "namespace": namespace,
+                    "service_type": service_type,
+                }
+            if not matching_ports:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Service '{service_name}' does not route to the "
+                        f"configured application port {port}."
+                    ),
+                    "service_name": service_name,
+                    "namespace": namespace,
+                    "service_type": service_type,
+                }
+
+            selected_port = matching_ports[0]
+            service_port_number = selected_port.port
+            target_port = selected_port.target_port or selected_port.port
+            resolved_target_port = (
+                target_port
+                if isinstance(target_port, int)
+                else port
+            )
+            service_details = {
+                "service_name": service_name,
+                "namespace": namespace,
+                "service_type": service_type,
+                "service_port": service_port_number,
+                "target_port": target_port,
+                "resolved_target_port": resolved_target_port,
+            }
+
+            ready, endpoint_error = await self._wait_for_ready_endpoints(
+                service_name,
+                namespace,
+                resolved_target_port,
+            )
+            if not ready:
+                return {
+                    "status": "pending",
+                    "error": endpoint_error,
+                    **service_details,
+                }
+
             if settings.CLOUDFLARE_TUNNEL_ENABLED and deployment_id:
                 try:
-                    service_port = next(
-                        (item.port for item in (service.spec.ports or []) if item.port),
-                        port,
-                    )
                     tunnel_endpoint = await cloudflare_tunnel_service.ensure_tunnel(
                         deployment_id,
                         namespace,
-                        service.metadata.name,
-                        service_port,
+                        service_name,
+                        service_port_number,
                         health_path,
                     )
                     return {
                         "status": "ready",
-                        "service_type": service_type,
+                        **service_details,
                         **tunnel_endpoint,
                     }
                 except RuntimeError as exc:
-                    return {
-                        "status": "error",
-                        "error": str(exc),
-                        "service_type": service_type,
-                    }
+                    # Tunnel failed — fall through to NodePort/minikube URL discovery
+                    # rather than returning an error immediately.
+                    pass
 
-            candidates = await self._service_url_candidates(service, namespace, port)
+            candidates = await self._service_url_candidates(
+                service,
+                namespace,
+                service_port_number,
+            )
             last_error = "Endpoint did not respond."
             if not candidates:
                 if service_type == "ClusterIP":
@@ -393,17 +539,109 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
                             return {
                                 "status": "ready",
                                 "public_url": candidate,
-                                "service_type": service_type,
+                                "endpoint_provider": "kubernetes-service",
+                                "last_verified_at": datetime.now(timezone.utc).isoformat(),
+                                **service_details,
                             }
                         last_error = f"Endpoint {candidate} is not reachable yet."
                     if attempt + 1 < settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS:
                         await asyncio.sleep(settings.K8S_ENDPOINT_DISCOVERY_INTERVAL_SECONDS)
-            return {"status": "pending", "error": last_error, "service_type": service_type}
+            return {
+                "status": "pending",
+                "error": last_error,
+                **service_details,
+            }
         except Exception as exc:
             return {
                 "status": "error",
                 "error": f"Endpoint discovery failed: {type(exc).__name__}: {exc}",
             }
+
+    @staticmethod
+    def _matching_service_ports(
+        service: Any,
+        deployment: Any,
+        application_port: int,
+    ) -> tuple[List[Any], Optional[str]]:
+        container_ports = [
+            item
+            for container in (
+                deployment.spec.template.spec.containers or []
+            )
+            for item in (container.ports or [])
+        ]
+        matches = []
+        for service_port in service.spec.ports or []:
+            target_port = service_port.target_port or service_port.port
+            if isinstance(target_port, int):
+                resolved_target_port = target_port
+            else:
+                resolved_target_port = next(
+                    (
+                        item.container_port
+                        for item in container_ports
+                        if item.name == target_port
+                    ),
+                    None,
+                )
+            if resolved_target_port == application_port:
+                matches.append(service_port)
+
+        if not matches:
+            return [], None
+        if len(matches) == 1:
+            return matches, None
+        preferred = [
+            item for item in matches if item.port == application_port
+        ]
+        if len(preferred) == 1:
+            return preferred, None
+        return [], (
+            f"Service '{service.metadata.name}' has multiple ports targeting "
+            f"application port {application_port}; configure one unambiguous "
+            "service port."
+        )
+
+    async def _wait_for_ready_endpoints(
+        self,
+        service_name: str,
+        namespace: str,
+        target_port: int,
+    ) -> tuple[bool, str]:
+        attempts = max(1, settings.K8S_ENDPOINT_DISCOVERY_ATTEMPTS)
+        last_error = (
+            f"Service '{service_name}' has no ready Kubernetes endpoints "
+            f"on target port {target_port}."
+        )
+        for attempt in range(attempts):
+            try:
+                endpoints = await asyncio.to_thread(
+                    self._core_client.read_namespaced_endpoints,
+                    name=service_name,
+                    namespace=namespace,
+                )
+                if any(
+                    subset.addresses
+                    and any(
+                        endpoint_port.port == target_port
+                        for endpoint_port in (subset.ports or [])
+                    )
+                    for subset in (endpoints.subsets or [])
+                ):
+                    return True, ""
+            except Exception as exc:
+                last_error = (
+                    f"Could not query ready endpoints for Service "
+                    f"'{service_name}' in namespace '{namespace}' "
+                    f"({type(exc).__name__})."
+                )
+
+            if attempt + 1 < attempts:
+                await asyncio.sleep(
+                    settings.K8S_ENDPOINT_DISCOVERY_INTERVAL_SECONDS
+                    * (2 ** attempt)
+                )
+        return False, last_error
 
     async def _service_url_candidates(
         self,
@@ -475,10 +713,6 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
             except Exception:
                 pass
 
-            # 4. Last-resort: localhost + NodePort (works if minikube tunnel is
-            #    running or the cluster is port-forwarded to the host)
-            candidates.append(f"http://127.0.0.1:{node_port}")
-
         return list(dict.fromkeys(candidates))
 
     async def _endpoint_is_reachable(self, base_url: str, health_path: str) -> bool:
@@ -491,7 +725,7 @@ class ProductionKubernetesAdapter(BaseDeploymentAdapter):
         try:
             request = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(request, timeout=settings.K8S_ENDPOINT_VERIFY_TIMEOUT_SECONDS) as response:
-                return response.status < 500
+                return 200 <= response.status < 300
         except (urllib.error.URLError, TimeoutError, OSError):
             return False
 

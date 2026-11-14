@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import api from '../api/client';
 import { Deployment, Project, Environment, Release, HealthCheck } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { GitBranch, RotateCcw, Terminal, Activity, CheckCircle2, AlertTriangle, Cpu, Layers, Trash2, ExternalLink, Pause, Play, Rocket, Clipboard, Loader2 } from 'lucide-react';
 import { RollbackModal } from '../components/RollbackModal';
+import { resolvePublicUrl } from '../utils/publicUrl';
 
 interface DeploymentsPageProps {
   initialSelectedId?: string | null;
@@ -20,23 +21,132 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
   const [showRollbackModal, setShowRollbackModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [endpointLoading, setEndpointLoading] = useState(false);
+  const selectedIdRef = useRef<string | null>(null);
+  const endpointRevisionRef = useRef(new Map<string, number>());
+  const endpointSequenceRef = useRef(0);
+  const endpointCheckAtRef = useRef(new Map<string, number>());
+  const endpointRequestsRef = useRef(new Map<string, Promise<Deployment>>());
+
+  const mergeDeployment = (
+    current: Deployment,
+    incoming: Deployment,
+    preserveCurrentEndpoint: boolean,
+  ): Deployment => {
+    const currentMetadata = current.metadata_info || {};
+    const incomingMetadata = incoming.metadata_info || {};
+    const endpointKeys = [
+      'endpoint_status',
+      'public_url',
+      'endpoint_details',
+      'endpoint_error',
+      'adapter_details',
+    ];
+    const hasIncomingEndpoint = endpointKeys.some((key) =>
+      Object.prototype.hasOwnProperty.call(incomingMetadata, key),
+    );
+    const preserveEndpoint = preserveCurrentEndpoint || !hasIncomingEndpoint;
+    const metadata = { ...currentMetadata, ...incomingMetadata };
+
+    if (preserveEndpoint) {
+      endpointKeys.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(currentMetadata, key)) {
+          metadata[key] = currentMetadata[key];
+        } else {
+          delete metadata[key];
+        }
+      });
+    }
+
+    return { ...current, ...incoming, metadata_info: metadata };
+  };
+
+  const applyDeploymentUpdate = (
+    incoming: Deployment,
+    requestSequence: number,
+    fromEndpoint: boolean,
+  ) => {
+    if (fromEndpoint) {
+      endpointSequenceRef.current += 1;
+      endpointRevisionRef.current.set(
+        incoming.id,
+        endpointSequenceRef.current,
+      );
+    }
+    const preserveCurrentEndpoint =
+      (endpointRevisionRef.current.get(incoming.id) || 0) > requestSequence &&
+      !fromEndpoint;
+    setDeployments((current) =>
+      current.map((item) =>
+        item.id === incoming.id
+          ? mergeDeployment(item, incoming, preserveCurrentEndpoint)
+          : item,
+      ),
+    );
+    setSelectedDep((current) => {
+      if (current?.id !== incoming.id && selectedIdRef.current !== incoming.id) {
+        return current;
+      }
+      const selected = current?.id === incoming.id ? current : incoming;
+      return mergeDeployment(selected, incoming, preserveCurrentEndpoint);
+    });
+  };
+
+  const requestEndpoint = (deploymentId: string): Promise<Deployment> => {
+    const pending = endpointRequestsRef.current.get(deploymentId);
+    if (pending) return pending;
+
+    const requestSequence = endpointSequenceRef.current;
+    endpointCheckAtRef.current.set(deploymentId, Date.now());
+    const request = api
+      .get(`/deployments/${deploymentId}/endpoint`)
+      .then((response) => {
+        const updated = response.data.data as Deployment;
+        applyDeploymentUpdate(updated, requestSequence, true);
+        return updated;
+      })
+      .finally(() => {
+        endpointRequestsRef.current.delete(deploymentId);
+      });
+    endpointRequestsRef.current.set(deploymentId, request);
+    return request;
+  };
 
   const loadAll = async () => {
+    const requestSequence = endpointSequenceRef.current;
     try {
       const [depRes, projRes] = await Promise.all([
         api.get('/deployments?limit=50'),
         api.get('/projects')
       ]);
-      setDeployments(depRes.data.data);
+      const fresh = depRes.data.data as Deployment[];
+      setDeployments((current) =>
+        fresh.map((deployment) => {
+          const existing = current.find((item) => item.id === deployment.id);
+          const preserveEndpoint =
+            (endpointRevisionRef.current.get(deployment.id) || 0) >
+            requestSequence;
+          return existing
+            ? mergeDeployment(existing, deployment, preserveEndpoint)
+            : deployment;
+        }),
+      );
       setProjects(projRes.data.data);
 
-      if (depRes.data.data.length > 0) {
-        if (initialSelectedId) {
-          const match = depRes.data.data.find((d: Deployment) => d.id === initialSelectedId);
-          setSelectedDep(match || depRes.data.data[0]);
-        } else if (!selectedDep) {
-          setSelectedDep(depRes.data.data[0]);
-        }
+      if (fresh.length > 0) {
+        const selected =
+          fresh.find((deployment) => deployment.id === initialSelectedId) ||
+          fresh.find((deployment) => deployment.id === selectedIdRef.current) ||
+          fresh[0];
+        selectedIdRef.current = selected.id;
+        setSelectedDep((current) => {
+          const existing = current?.id === selected.id ? current : selected;
+          return mergeDeployment(
+            existing,
+            selected,
+            (endpointRevisionRef.current.get(selected.id) || 0) >
+              requestSequence,
+          );
+        });
       }
     } catch (err) {
       console.error(err);
@@ -46,29 +156,27 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
   };
 
   const loadDeploymentDetails = async (depId: string) => {
+    const requestSequence = endpointSequenceRef.current;
     try {
       const [depRes, hcRes] = await Promise.all([
         api.get(`/deployments/${depId}`),
         api.get(`/deployments/${depId}/health-checks`)
       ]);
       const deployment = depRes.data.data as Deployment;
-      setSelectedDep(deployment);
+      applyDeploymentUpdate(deployment, requestSequence, false);
       setHealthChecks(hcRes.data.data);
-      const endpointStatus = deployment.metadata_info?.endpoint_status;
       if (
         ['active', 'deploying', 'verifying'].includes(deployment.status) &&
-        (!getPublicUrl(deployment) || endpointStatus !== 'ready')
+        (!getPublicUrl(deployment) ||
+          deployment.metadata_info?.endpoint_status !== 'ready')
       ) {
-        setEndpointLoading(true);
+        if (selectedIdRef.current === depId) setEndpointLoading(true);
         try {
-          const endpointRes = await api.get(`/deployments/${depId}/endpoint`);
-          const updated = endpointRes.data.data as Deployment;
-          setSelectedDep(updated);
-          setDeployments((current) => current.map((item) => item.id === updated.id ? updated : item));
+          await requestEndpoint(depId);
         } catch (err) {
           console.error('Failed to discover deployment endpoint:', err);
         } finally {
-          setEndpointLoading(false);
+          if (selectedIdRef.current === depId) setEndpointLoading(false);
         }
       }
     } catch (err) {
@@ -83,26 +191,41 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
    * discovered and persisted even before the user clicks on the card.
    */
   const refreshPendingEndpoints = async (current: Deployment[]) => {
-    const needsEndpoint = current.filter(
-      (d) =>
-        ['active', 'deploying', 'verifying'].includes(d.status) &&
-        d.metadata_info?.endpoint_status !== 'ready' &&
-        d.metadata_info?.endpoint_status !== 'error' &&
-        !getPublicUrl(d),
-    );
+    const now = Date.now();
+    const needsEndpoint = current.filter((deployment) => {
+      if (!['active', 'deploying', 'verifying'].includes(deployment.status)) {
+        return false;
+      }
+      if (endpointRequestsRef.current.has(deployment.id)) return false;
+
+      const publicUrl = getPublicUrl(deployment);
+      const metadata = deployment.metadata_info || {};
+      const endpointDetails = metadata.endpoint_details || {};
+      const lastCheck = endpointCheckAtRef.current.get(deployment.id) || 0;
+      const isQuickTunnel =
+        endpointDetails.tunnel_provider === 'cloudflare-quick-tunnel' ||
+        (!!publicUrl &&
+          new URL(publicUrl).hostname.toLowerCase().endsWith('.trycloudflare.com'));
+      if (metadata.endpoint_status === 'unavailable') return false;
+      if (metadata.endpoint_status === 'error') {
+        return now - lastCheck >= 30000;
+      }
+      if (
+        publicUrl &&
+        metadata.endpoint_status === 'ready' &&
+        (!isQuickTunnel ||
+          now - lastCheck < 30000)
+      ) {
+        return false;
+      }
+      return true;
+    });
     await Promise.allSettled(
-      needsEndpoint.map(async (d) => {
+      needsEndpoint.map(async (deployment) => {
         try {
-          const res = await api.get(`/deployments/${d.id}/endpoint`);
-          const updated = res.data.data as Deployment;
-          setDeployments((prev) =>
-            prev.map((item) => (item.id === updated.id ? updated : item)),
-          );
-          setSelectedDep((prev) =>
-            prev?.id === updated.id ? updated : prev,
-          );
-        } catch {
-          // silently ignore — will retry on next tick
+          await requestEndpoint(deployment.id);
+        } catch (err) {
+          console.error('Background endpoint discovery failed:', err);
         }
       }),
     );
@@ -111,17 +234,28 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
   useEffect(() => {
     loadAll();
     const interval = setInterval(async () => {
+      const requestSequence = endpointSequenceRef.current;
       try {
         const [depRes] = await Promise.all([api.get('/deployments?limit=50')]);
         const fresh: Deployment[] = depRes.data.data;
-        setDeployments(fresh);
+        setDeployments((current) =>
+          fresh.map((deployment) => {
+            const existing = current.find((item) => item.id === deployment.id);
+            if (!existing) return deployment;
+            const preserveEndpoint =
+              (endpointRevisionRef.current.get(deployment.id) || 0) >
+              requestSequence;
+            return mergeDeployment(existing, deployment, preserveEndpoint);
+          }),
+        );
         // Refresh health checks for the selected deployment
-        if (selectedDep) {
+        const selectedId = selectedIdRef.current;
+        if (selectedId) {
           try {
-            const hcRes = await api.get(`/deployments/${selectedDep.id}/health-checks`);
+            const hcRes = await api.get(`/deployments/${selectedId}/health-checks`);
             setHealthChecks(hcRes.data.data);
-            const match = fresh.find((d) => d.id === selectedDep.id);
-            if (match) setSelectedDep(match);
+            const match = fresh.find((deployment) => deployment.id === selectedId);
+            if (match) applyDeploymentUpdate(match, requestSequence, false);
           } catch {
             // ignore
           }
@@ -143,10 +277,60 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
 
   const getProjectName = (projId: string) => projects.find((p) => p.id === projId)?.name || projId;
 
-  const getPublicUrl = (deployment: Deployment): string | undefined => {
-    const metadata = deployment.metadata_info;
-    const publicUrl = metadata?.public_url ?? metadata?.adapter_details?.public_url;
-    return typeof publicUrl === 'string' && publicUrl.trim() ? publicUrl.trim() : undefined;
+  const getPublicUrl = (deployment: Deployment): string | undefined =>
+    resolvePublicUrl(deployment.metadata_info);
+
+  const getEndpointStatusLabel = (deployment: Deployment): string => {
+    const metadata = deployment.metadata_info || {};
+    if (getPublicUrl(deployment)) return 'Public endpoint ready';
+
+    const error = String(metadata.endpoint_error || '').toLowerCase();
+    if (error.includes('port-forward')) return 'Port-forward failed';
+    if (error.includes('cloudflared') || error.includes('quick tunnel')) {
+      return 'Cloudflare tunnel failed';
+    }
+    if (
+      error.includes('public endpoint') ||
+      error.includes('health check') ||
+      error.includes('dns resolution')
+    ) {
+      return 'Verifying public endpoint failed';
+    }
+    if (metadata.endpoint_status === 'error' || metadata.endpoint_phase === 'failed') {
+      return 'Endpoint failed';
+    }
+    return 'Waiting for Kubernetes service readiness';
+  };
+
+  const refreshEndpoint = async (deployment: Deployment) => {
+    const isSelected = selectedIdRef.current === deployment.id;
+    if (isSelected) setEndpointLoading(true);
+    try {
+      await requestEndpoint(deployment.id);
+    } catch (err) {
+      console.error('Failed to refresh deployment endpoint:', err);
+      const errorMetadata: Deployment['metadata_info'] = {
+        ...(deployment.metadata_info || {}),
+        endpoint_status: 'error',
+        endpoint_phase: 'failed',
+        endpoint_error: 'Endpoint refresh request failed.',
+      };
+      delete errorMetadata.public_url;
+      setDeployments((current) =>
+        current.map((item) =>
+          item.id === deployment.id
+            ? { ...item, metadata_info: errorMetadata }
+            : item,
+        ),
+      );
+      setSelectedDep((current) =>
+        current?.id === deployment.id
+          ? { ...current, metadata_info: errorMetadata }
+          : current,
+      );
+    } finally {
+      if (isSelected) setEndpointLoading(false);
+    }
   };
 
   const copyPublicUrl = async (deployment: Deployment) => {
@@ -167,6 +351,7 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
       await api.delete(`/deployments/${deployment.id}`);
       setDeployments((current) => current.filter((item) => item.id !== deployment.id));
       if (selectedDep?.id === deployment.id) {
+        selectedIdRef.current = null;
         setSelectedDep(null);
       }
     } catch (err: any) {
@@ -179,6 +364,7 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
     try {
       await api.delete('/deployments');
       setDeployments([]);
+      selectedIdRef.current = null;
       setSelectedDep(null);
     } catch (err: any) {
       window.alert(err.response?.data?.detail || 'Unable to delete deployment history.');
@@ -187,11 +373,11 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
 
   const togglePause = async (deployment: Deployment) => {
     const paused = deployment.metadata_info?.paused === true;
+    const requestSequence = endpointSequenceRef.current;
     try {
       const response = await api.post(`/deployments/${deployment.id}/${paused ? 'resume' : 'pause'}`);
       const updated = response.data.data as Deployment;
-      setDeployments((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setSelectedDep((current) => current?.id === updated.id ? updated : current);
+      applyDeploymentUpdate(updated, requestSequence, false);
     } catch (err: any) {
       window.alert(err.response?.data?.detail || `Unable to ${paused ? 'resume' : 'pause'} deployment.`);
     }
@@ -257,6 +443,7 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
             <div
               key={dep.id}
               onClick={() => {
+                selectedIdRef.current = dep.id;
                 setSelectedDep(dep);
                 loadDeploymentDetails(dep.id);
               }}
@@ -329,9 +516,7 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
               )}
               {dep.status === 'active' && !getPublicUrl(dep) && (
                 <div className="mt-2 text-xs text-amber-300">
-                  {dep.metadata_info?.endpoint_status === 'error'
-                    ? 'Endpoint discovery failed'
-                    : 'Endpoint pending'}
+                  {getEndpointStatusLabel(dep)}
                 </div>
               )}
 
@@ -402,48 +587,101 @@ export const DeploymentsPage: React.FC<DeploymentsPageProps> = ({ initialSelecte
                 {endpointLoading ? (
                   <div className="flex items-center gap-2 text-sm text-amber-300">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Discovering application endpoint...
+                    Checking Kubernetes readiness and public endpoint...
                   </div>
                 ) : getPublicUrl(selectedDep) ? (
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="truncate font-mono text-xs text-emerald-300">
-                      {getPublicUrl(selectedDep)}
-                    </span>
-                    <div className="flex shrink-0 gap-2">
-                      <a
-                        href={getPublicUrl(selectedDep)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/30"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        Open Application
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => void copyPublicUrl(selectedDep)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/20"
-                      >
-                        <Clipboard className="h-3.5 w-3.5" />
-                        Copy URL
-                      </button>
+                  <div className="space-y-2">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="truncate font-mono text-xs text-emerald-300">
+                        {getPublicUrl(selectedDep)}
+                      </span>
+                      <div className="flex shrink-0 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void refreshEndpoint(selectedDep)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/20"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          Refresh Endpoint
+                        </button>
+                        <a
+                          href={getPublicUrl(selectedDep)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/30"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Open Application
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => void copyPublicUrl(selectedDep)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/20"
+                        >
+                          <Clipboard className="h-3.5 w-3.5" />
+                          Copy URL
+                        </button>
+                      </div>
                     </div>
+                    {selectedDep.metadata_info?.endpoint_details?.tunnel_provider ===
+                      'cloudflare-quick-tunnel' && (
+                      <p className="text-[11px] text-slate-400">
+                        Quick Tunnel URLs change when a tunnel is recreated.
+                      </p>
+                    )}
+                    {selectedDep.metadata_info?.last_verified_at && (
+                      <p className="text-[11px] text-slate-400">
+                        Last verified:{' '}
+                        {new Date(
+                          selectedDep.metadata_info.last_verified_at,
+                        ).toLocaleString()}
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div className="text-sm text-amber-300">
                     <div className="font-semibold">
-                      {selectedDep.metadata_info?.endpoint_status === 'error'
-                        ? 'Endpoint discovery failed'
-                        : 'Endpoint Pending'}
+                      {getEndpointStatusLabel(selectedDep)}
                     </div>
                     <div className="mt-1 text-xs text-slate-400">
                       {selectedDep.metadata_info?.endpoint_error ||
                         'Kubernetes has not assigned a reachable endpoint yet.'}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshEndpoint(selectedDep)}
+                      disabled={endpointLoading}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Retry Endpoint
+                    </button>
                   </div>
                 )}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                  <div className="text-[11px] text-slate-400 uppercase font-semibold">Namespace</div>
+                  <div className="text-sm font-bold text-white">
+                    {selectedDep.metadata_info?.namespace ||
+                      selectedDep.metadata_info?.endpoint_details?.namespace ||
+                      '—'}
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                  <div className="text-[11px] text-slate-400 uppercase font-semibold">Kubernetes Service</div>
+                  <div className="text-sm font-bold text-white">
+                    {selectedDep.metadata_info?.service_name ||
+                      selectedDep.metadata_info?.endpoint_details?.service_name ||
+                      '—'}
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                  <div className="text-[11px] text-slate-400 uppercase font-semibold">Endpoint Status</div>
+                  <div className="text-sm font-bold text-white">
+                    {getEndpointStatusLabel(selectedDep)}
+                  </div>
+                </div>
                 <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
                   <div className="text-[11px] text-slate-400 uppercase font-semibold">Strategy</div>
                   <div className="text-sm font-bold text-white capitalize">{selectedDep.strategy}</div>

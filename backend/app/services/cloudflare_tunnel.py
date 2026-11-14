@@ -98,8 +98,12 @@ class CloudflareTunnelService:
     ) -> Dict[str, object]:
         with self._lock:
             existing = self._tunnels.get(deployment_key)
-            if existing and existing.process_state == "running" and existing.public_url:
-                if self._verify_url(existing.public_url, health_path):
+            if existing:
+                if (
+                    existing.process_state == "running"
+                    and existing.public_url
+                    and self._verify_url(existing.public_url, health_path)
+                ):
                     existing.last_verified_at = self._now()
                     return self._result(existing, "ready")
                 self._stop_handle(existing)
@@ -110,16 +114,64 @@ class CloudflareTunnelService:
                 namespace,
                 service_name,
                 service_port,
+                health_path,
             )
             self._tunnels[deployment_key] = handle
             if not self._wait_for_url(handle):
+                port_forward_exit = (
+                    handle.port_forward.poll()
+                    if handle.port_forward is not None
+                    else None
+                )
+                cloudflared_exit = (
+                    handle.cloudflared.poll()
+                    if handle.cloudflared is not None
+                    else None
+                )
                 self._stop_handle(handle)
                 self._tunnels.pop(deployment_key, None)
-                raise RuntimeError("cloudflared did not provide a Quick Tunnel URL.")
+                if port_forward_exit is not None:
+                    raise RuntimeError(
+                        "Kubernetes port-forward exited before Cloudflare URL "
+                        f"discovery (exit code {port_forward_exit})."
+                    )
+                if cloudflared_exit is not None:
+                    raise RuntimeError(
+                        "cloudflared exited before providing a Quick Tunnel URL "
+                        f"(exit code {cloudflared_exit}). Check the cloudflared executable "
+                        "and its startup output."
+                    )
+                raise RuntimeError(
+                    "cloudflared did not provide a Quick Tunnel URL before the "
+                    "startup timeout."
+                )
             if not self._wait_for_public_endpoint(handle, health_path):
+                port_forward_exit = (
+                    handle.port_forward.poll()
+                    if handle.port_forward is not None
+                    else None
+                )
+                cloudflared_exit = (
+                    handle.cloudflared.poll()
+                    if handle.cloudflared is not None
+                    else None
+                )
                 self._stop_handle(handle)
                 self._tunnels.pop(deployment_key, None)
-                raise RuntimeError("The Cloudflare public endpoint did not pass verification.")
+                if port_forward_exit is not None:
+                    raise RuntimeError(
+                        "Kubernetes port-forward exited before public endpoint "
+                        f"verification (exit code {port_forward_exit})."
+                    )
+                if cloudflared_exit is not None:
+                    raise RuntimeError(
+                        "cloudflared exited before public health verification "
+                        f"(exit code {cloudflared_exit})."
+                    )
+                raise RuntimeError(
+                    "The Cloudflare public endpoint did not pass verification. "
+                    "DNS resolution or the public health check failed before timeout."
+                )
             handle.last_verified_at = self._now()
             logger.info(
                 "Cloudflare endpoint verified",
@@ -133,6 +185,7 @@ class CloudflareTunnelService:
         namespace: str,
         service_name: str,
         service_port: int,
+        health_path: str,
     ) -> TunnelHandle:
         local_port = self._available_port()
         local_url = f"http://{settings.PORT_FORWARD_HOST}:{local_port}"
@@ -172,7 +225,7 @@ class CloudflareTunnelService:
             "Started Kubernetes port-forward",
             extra={"deployment_id": deployment_key, "service_name": service_name},
         )
-        if not self._wait_for_local_service(handle):
+        if not self._wait_for_local_service(handle, health_path):
             self._stop_handle(handle)
             raise RuntimeError("Kubernetes port-forward did not become reachable.")
 
@@ -194,7 +247,7 @@ class CloudflareTunnelService:
             self._stop_handle(handle)
             raise RuntimeError(f"Unable to start cloudflared: {type(exc).__name__}.") from exc
         handle.cloudflared = cloudflared
-        handle.reader = self._start_reader(cloudflared, handle.output)
+        self._start_reader(cloudflared, handle.output)
         logger.info(
             "Started Cloudflare Quick Tunnel",
             extra={"deployment_id": deployment_key, "service_name": service_name},
@@ -218,12 +271,12 @@ class CloudflareTunnelService:
         reader.start()
         return reader
 
-    def _wait_for_local_service(self, handle: TunnelHandle) -> bool:
+    def _wait_for_local_service(self, handle: TunnelHandle, health_path: str) -> bool:
         deadline = time.monotonic() + settings.TUNNEL_STARTUP_TIMEOUT
         while time.monotonic() < deadline:
             if handle.port_forward and handle.port_forward.poll() is not None:
                 return False
-            if self._verify_url(handle.local_url, "/"):
+            if self._verify_url(handle.local_url, health_path):
                 return True
             time.sleep(0.25)
         return False
@@ -231,6 +284,8 @@ class CloudflareTunnelService:
     def _wait_for_url(self, handle: TunnelHandle) -> bool:
         deadline = time.monotonic() + settings.TUNNEL_STARTUP_TIMEOUT
         while time.monotonic() < deadline:
+            if handle.port_forward and handle.port_forward.poll() is not None:
+                return False
             if handle.cloudflared and handle.cloudflared.poll() is not None:
                 return False
             for line in list(handle.output):
@@ -258,6 +313,12 @@ class CloudflareTunnelService:
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
+            if handle.port_forward and handle.port_forward.poll() is not None:
+                logger.error(
+                    "Kubernetes port-forward exited before public endpoint verification",
+                    extra={"deployment_id": handle.key},
+                )
+                return False
             if handle.cloudflared and handle.cloudflared.poll() is not None:
                 logger.error(
                     "Cloudflared exited before the public endpoint became healthy",
@@ -275,8 +336,9 @@ class CloudflareTunnelService:
             time.sleep(1.0)
 
         logger.error(
-            f"Cloudflare endpoint did not become healthy within {timeout:.0f} seconds: "
-            f"{handle.public_url}{health_path}",
+            "Cloudflare endpoint DNS resolution or public health verification "
+            "did not succeed within %.0f seconds.",
+            timeout,
             extra={"deployment_id": handle.key},
         )
         return False
@@ -294,7 +356,7 @@ class CloudflareTunnelService:
                 request,
                 timeout=settings.ENDPOINT_VERIFICATION_TIMEOUT,
             ) as response:
-                return 200 <= response.status < 500
+                return 200 <= response.status < 300
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             logger.warning(
                 f"Endpoint probe to {base_url.rstrip('/')}{path} failed: "
@@ -311,7 +373,7 @@ class CloudflareTunnelService:
             return int(sock.getsockname()[1])
 
     def _result(self, handle: TunnelHandle, status: str) -> Dict[str, object]:
-        return {
+        result: Dict[str, object] = {
             "status": status,
             "public_url": handle.public_url,
             "local_url": handle.local_url,
@@ -322,6 +384,25 @@ class CloudflareTunnelService:
             "tunnel_process_state": handle.process_state,
             "last_verified_at": handle.last_verified_at,
         }
+        process_ids = {
+            "port_forward": getattr(handle.port_forward, "pid", None),
+            "cloudflared": getattr(handle.cloudflared, "pid", None),
+        }
+        if any(process_ids.values()):
+            result["process_ids"] = process_ids
+        return result
+
+    def has_running_tunnel(self, deployment_key: str, public_url: str) -> bool:
+        with self._lock:
+            handle = self._tunnels.get(deployment_key)
+            return bool(
+                handle
+                and handle.process_state == "running"
+                and handle.public_url == public_url
+            )
+
+    def stop_tunnel_sync(self, deployment_key: str) -> None:
+        self._stop_tunnel(deployment_key)
 
     def _stop_tunnel(self, deployment_key: str) -> None:
         with self._lock:
@@ -359,41 +440,68 @@ class CloudflareTunnelService:
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
-    def cleanup_orphaned_processes() -> int:
-        """Terminate any orphaned cloudflared or kubectl port-forward processes from previous crashed sessions."""
+    def cleanup_orphaned_processes(
+        processes: Optional[List[Dict[str, object]]] = None,
+    ) -> int:
+        """Stop only previously recorded ReleasePilot tunnel processes."""
         import sys
-        if sys.platform != "win32":
+
+        if sys.platform != "win32" or not processes:
             return 0
-        cleaned = 0
-        try:
-            cmd = (
-                "Get-CimInstance Win32_Process -Filter \"Name = 'cloudflared.exe'\" "
-                "| Where-Object { $_.CommandLine -like '*tunnel*' } "
-                "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+
+        checks = []
+        for item in processes:
+            pid = item.get("pid")
+            name = item.get("name")
+            matches = item.get("matches", [])
+            if not isinstance(pid, int) or pid <= 0 or name not in {
+                "cloudflared.exe",
+                "kubectl.exe",
+            }:
+                continue
+            safe_matches = [
+                str(match).replace("'", "''")
+                for match in matches
+                if isinstance(match, str) and match
+            ]
+            if not safe_matches:
+                continue
+            conditions = " -and ".join(
+                f"$process.CommandLine.Contains('{match}')"
+                for match in safe_matches
             )
-            res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=10)
-            pids = [line.strip() for line in res.stdout.splitlines() if line.strip().isdigit()]
-            cleaned += len(pids)
-            if pids:
-                logger.info(f"Cleaned up {len(pids)} orphaned cloudflared process(es): {pids}")
-        except Exception as exc:
-            logger.warning(f"Could not sweep orphaned cloudflared processes: {exc}")
+            checks.append(
+                f"$process = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; "
+                f"if ($process -and $process.Name -eq '{name}' -and {conditions}) "
+                f"{{ Stop-Process -Id {pid} -Force; Write-Output {pid} }}"
+            )
+        if not checks:
+            return 0
 
         try:
-            cmd = (
-                "Get-CimInstance Win32_Process -Filter \"Name = 'kubectl.exe'\" "
-                "| Where-Object { $_.CommandLine -like '*port-forward*' } "
-                "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "; ".join(checks)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
             )
-            res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=10)
-            pids = [line.strip() for line in res.stdout.splitlines() if line.strip().isdigit()]
-            cleaned += len(pids)
+            pids = [
+                line.strip()
+                for line in result.stdout.splitlines()
+                if line.strip().isdigit()
+            ]
+            if result.returncode != 0:
+                logger.warning("Unable to clean up all recorded tunnel processes.")
             if pids:
-                logger.info(f"Cleaned up {len(pids)} orphaned kubectl port-forward process(es): {pids}")
+                logger.info("Cleaned up %s recorded tunnel process(es).", len(pids))
+            return len(pids)
         except Exception as exc:
-            logger.warning(f"Could not sweep orphaned kubectl processes: {exc}")
-
-        return cleaned
+            logger.warning(
+                "Could not clean up recorded tunnel processes: %s",
+                type(exc).__name__,
+            )
+            return 0
 
 
 cloudflare_tunnel_service = CloudflareTunnelService()

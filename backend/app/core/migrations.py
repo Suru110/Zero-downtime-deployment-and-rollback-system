@@ -14,6 +14,9 @@ def _alembic_config() -> Config:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    # Silence alembic's fileConfig() re-configuring the root logger;
+    # releasepilot manages its own structured logging.
+    config.config_file_name = None
     return config
 
 
@@ -56,7 +59,16 @@ def run_migrations() -> None:
             command.stamp(_alembic_config(), baseline)
 
     logger.info("Applying database migrations to head.")
-    command.upgrade(_alembic_config(), "head")
+    try:
+        command.upgrade(_alembic_config(), "head")
+    except Exception as exc:
+        logger.error(
+            "Database migration failed: %s. "
+            "If using SQLite, ensure no other process has the database locked "
+            "(kill any stale backend processes and retry).",
+            exc,
+        )
+        raise
     logger.info("Database migrations completed successfully.")
     if baseline:
         logger.info("Legacy database migrated from %s to head.", baseline)

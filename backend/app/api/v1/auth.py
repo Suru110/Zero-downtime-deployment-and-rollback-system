@@ -1,11 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_user
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.core.config import settings
 from app.models.user import User
-from app.schemas.auth import UserCreate, UserLogin, UserOut, TokenResponse
+from app.schemas.auth import (
+    OAuth2TokenResponse,
+    UserCreate,
+    UserLogin,
+    UserOut,
+    TokenResponse,
+)
 from app.schemas.common import ApiResponse
 from app.services.audit_service import AuditService
 
@@ -72,6 +79,17 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 @router.post("/login-json", response_model=ApiResponse[TokenResponse], include_in_schema=False)
 def login_json(payload: UserLogin, db: Session = Depends(get_db)):
     return login(payload, db)
+
+@router.post("/token", response_model=OAuth2TokenResponse)
+def login_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    token = _authenticate(
+        UserLogin(email=form_data.username, password=form_data.password),
+        db,
+    )
+    return OAuth2TokenResponse(access_token=token.access_token)
 
 @router.get("/me", response_model=ApiResponse[UserOut])
 def get_me(current_user: User = Depends(get_current_user)):

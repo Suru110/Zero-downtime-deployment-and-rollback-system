@@ -41,7 +41,9 @@ class HealthMonitorService:
         endpoint exists in the mock cluster. Production adapters always perform
         the configured HTTP check and report failures truthfully.
         """
-        adapter = get_deployment_adapter()
+        adapter = get_deployment_adapter(
+            "mock" if deployment.is_simulated else "production"
+        )
         all_passed = True
 
         started = time.monotonic()

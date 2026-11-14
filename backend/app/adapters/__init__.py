@@ -1,4 +1,5 @@
 from app.core.config import settings
+from typing import Optional
 from app.adapters.base import (
     BaseDeploymentAdapter,
     BaseSecurityScannerAdapter,
@@ -14,10 +15,16 @@ from app.adapters.gitops.argo_adapter import ProductionArgoCDAdapter
 from app.adapters.monitoring.mock_prometheus_adapter import MockPrometheusAdapter
 from app.adapters.monitoring.prometheus_adapter import ProductionPrometheusAdapter
 
-def get_deployment_adapter() -> BaseDeploymentAdapter:
-    if settings.KUBERNETES_MODE.lower() == "mock":
+def get_deployment_adapter(mode: Optional[str] = None) -> BaseDeploymentAdapter:
+    selected_mode = (mode or settings.KUBERNETES_MODE).strip().lower()
+    if selected_mode == "mock":
         return MockKubernetesAdapter()
-    return ProductionKubernetesAdapter()
+    if selected_mode == "production":
+        return ProductionKubernetesAdapter()
+    raise ValueError(
+        "KUBERNETES_MODE must be either 'production' or 'mock'; "
+        f"received '{selected_mode}'."
+    )
 
 def get_security_scanner_adapter() -> BaseSecurityScannerAdapter:
     if settings.ENABLE_MOCK_ADAPTERS:

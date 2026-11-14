@@ -19,33 +19,90 @@ logger = get_logger("releasepilot.main")
 
 def _reset_stale_quick_tunnels():
     try:
-        # Sweep any orphaned background processes from unexpected crashes
-        cloudflare_tunnel_service.cleanup_orphaned_processes()
-
         with SessionLocal() as db:
             from app.models.deployment import Deployment
             from sqlalchemy.orm.attributes import flag_modified
             deployments = db.query(Deployment).all()
             updated_count = 0
+            orphaned_processes = []
             for d in deployments:
-                if d.metadata_info:
-                    provider = (
-                        d.metadata_info.get("tunnel_provider")
-                        or d.metadata_info.get("endpoint_details", {}).get("tunnel_provider")
-                    )
-                    url = d.metadata_info.get("public_url") or ""
-                    if provider == "cloudflare-quick-tunnel" or "trycloudflare.com" in url:
-                        meta = dict(d.metadata_info)
-                        if meta.get("endpoint_status") == "ready":
-                            meta["endpoint_status"] = "pending"
-                            meta.pop("public_url", None)
-                            meta["endpoint_error"] = "Backend was restarted; tunnel needs to be re-established."
-                            d.metadata_info = meta
-                            flag_modified(d, "metadata_info")
-                            updated_count += 1
+                metadata = dict(d.metadata_info or {})
+                endpoint_details = dict(metadata.get("endpoint_details") or {})
+                adapter_details = dict(metadata.get("adapter_details") or {})
+                provider = (
+                    metadata.get("tunnel_provider")
+                    or endpoint_details.get("tunnel_provider")
+                )
+                url = (
+                    metadata.get("public_url")
+                    or endpoint_details.get("public_url")
+                    or adapter_details.get("public_url")
+                    or ""
+                )
+                is_quick_tunnel = (
+                    provider == "cloudflare-quick-tunnel"
+                    or "trycloudflare.com" in str(url).lower()
+                )
+                if not is_quick_tunnel:
+                    continue
+
+                process_ids = endpoint_details.get("process_ids") or {}
+                local_url = endpoint_details.get("local_url")
+                service_name = endpoint_details.get("service_name")
+                namespace = endpoint_details.get("namespace")
+                if isinstance(process_ids, dict):
+                    cloudflared_pid = process_ids.get("cloudflared")
+                    if isinstance(cloudflared_pid, int) and local_url:
+                        orphaned_processes.append({
+                            "pid": cloudflared_pid,
+                            "name": "cloudflared.exe",
+                            "matches": ["tunnel", str(local_url)],
+                        })
+                    port_forward_pid = process_ids.get("port_forward")
+                    if (
+                        isinstance(port_forward_pid, int)
+                        and service_name
+                        and namespace
+                    ):
+                        orphaned_processes.append({
+                            "pid": port_forward_pid,
+                            "name": "kubectl.exe",
+                            "matches": [
+                                "port-forward",
+                                f"service/{service_name}",
+                                str(namespace),
+                            ],
+                        })
+
+                metadata.pop("public_url", None)
+                metadata["endpoint_status"] = "pending"
+                metadata["endpoint_error"] = (
+                    "Backend restarted; the Cloudflare tunnel must be re-established."
+                )
+                endpoint_details.update({
+                    "status": "pending",
+                    "tunnel_process_state": "stopped",
+                })
+                endpoint_details.pop("public_url", None)
+                endpoint_details.pop("process_ids", None)
+                metadata["endpoint_details"] = endpoint_details
+                adapter_details.pop("public_url", None)
+                metadata["adapter_details"] = adapter_details
+                d.metadata_info = metadata
+                flag_modified(d, "metadata_info")
+                updated_count += 1
+
+            cleaned_count = cloudflare_tunnel_service.cleanup_orphaned_processes(
+                orphaned_processes
+            )
             if updated_count > 0:
                 db.commit()
-                logger.info(f"Reset {updated_count} stale Cloudflare Quick Tunnel state(s) on startup.")
+                logger.info(
+                    "Reset %s stale Cloudflare Quick Tunnel state(s) on startup; "
+                    "cleaned %s recorded process(es).",
+                    updated_count,
+                    cleaned_count,
+                )
     except Exception as exc:
         logger.warning(f"Could not reset stale quick tunnels: {exc}")
 
